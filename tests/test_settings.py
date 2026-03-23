@@ -85,6 +85,31 @@ def test_reporter_jira_nested_under_tools(tmp_path: Path, monkeypatch) -> None:
     assert s.reporter.jira.project_key == "SEC"
 
 
+def test_llm_yaml_schema_same_for_all_agents(tmp_path: Path, monkeypatch) -> None:
+    """Every agent block uses _parse_llm + LlmAgentConfig; fields must match across roles."""
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("CUSTOM_LLM_KEY", "k")
+    llm_yaml = {
+        "model": "deepseek-chat",
+        "api_key_env": "CUSTOM_LLM_KEY",
+        "base_url": "https://api.deepseek.com",
+        "temperature": 0.25,
+        "max_tokens": 4096,
+    }
+    agents = _minimal_agents()
+    for name in ("secrets_reviewer", "dependencies_reviewer", "code_reviewer", "reporter"):
+        agents[name]["llm"] = dict(llm_yaml)
+    cfg = tmp_path / "appsec_crew.yaml"
+    cfg.write_text(yaml.safe_dump({"global": {"github": {}}, "agents": agents}), encoding="utf-8")
+    s = load_settings(cfg)
+    for block in (s.secrets_reviewer, s.dependencies_reviewer, s.code_reviewer, s.reporter):
+        assert block.llm.model == "deepseek-chat"
+        assert block.llm.api_key == "k"
+        assert block.llm.base_url == "https://api.deepseek.com"
+        assert block.llm.temperature == 0.25
+        assert block.llm.extra == {"max_tokens": 4096}
+
+
 def test_crew_llm_ready_respects_disabled_agents(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cfg = Path(__file__).resolve().parent.parent / "appsec_crew.yaml.example"

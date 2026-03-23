@@ -73,6 +73,19 @@ VALID_MIN_SEVERITIES = frozenset({"critical", "high", "medium", "low"})
 
 @dataclass
 class LlmAgentConfig:
+    """
+    LLM options for every agent (`secrets_reviewer`, `dependencies_reviewer`, `code_reviewer`, `reporter`).
+
+    YAML keys under ``agents.<role>.llm`` (all roles use the same schema):
+
+    - ``model`` — model id passed to CrewAI ``LLM``
+    - ``provider`` — optional CrewAI provider name
+    - ``base_url`` — optional API base URL (OpenAI-compatible endpoints)
+    - ``api_key`` / ``api_key_env`` — inline key or env var (env used when ``api_key`` empty)
+    - ``temperature`` — float
+    - Any other keys are kept in ``extra`` and forwarded to ``LLM(...)`` by ``build_llm``
+    """
+
     model: str = "gpt-4o-mini"
     provider: str | None = None
     base_url: str | None = None

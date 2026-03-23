@@ -11,7 +11,10 @@ def build_llm(cfg: LlmAgentConfig) -> LLM | None:
     key = cfg.api_key
     if not key:
         return None
-    kwargs: dict = {"api_key": key, "temperature": cfg.temperature}
+    # Same kwargs shape for every agent; unknown YAML keys live in cfg.extra (see _parse_llm).
+    kwargs: dict = dict(cfg.extra)
+    kwargs["api_key"] = key
+    kwargs["temperature"] = cfg.temperature
     if cfg.base_url:
         kwargs["base_url"] = cfg.base_url
     if cfg.provider:
