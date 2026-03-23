@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -117,13 +118,30 @@ def run_semgrep(
         extra_args=extra_args,
         command_template=command_template,
     )
-    run_scanner(cmd, cwd=repo, tool_label="semgrep", commands_log=commands_log)
+    proc = run_scanner(cmd, cwd=repo, tool_label="semgrep", commands_log=commands_log)
+    stderr = (proc.stderr or "").strip()
+    if stderr and proc.returncode not in (0, 1):
+        print(
+            f"[appsec-crew] semgrep exit={proc.returncode} stderr (truncated): {stderr[:8000]}",
+            file=sys.stderr,
+            flush=True,
+        )
     if not report_path.is_file():
+        if stderr:
+            print(f"[appsec-crew] semgrep: no report file; stderr: {stderr[:4000]}", file=sys.stderr, flush=True)
         return []
     raw = report_path.read_text(encoding="utf-8", errors="replace").strip()
     if not raw:
         return []
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"[appsec-crew] semgrep: invalid JSON report: {e}", file=sys.stderr, flush=True)
+        return []
+    errs = data.get("errors")
+    if isinstance(errs, list) and errs:
+        for err in errs[:8]:
+            print(f"[appsec-crew] semgrep engine error: {err!r}", file=sys.stderr, flush=True)
     res = data.get("results")
     if isinstance(res, list):
         return [x for x in res if isinstance(x, dict)]

@@ -23,7 +23,7 @@ agents:
         config_path: null
         # extra_args: []          # appended to default CLI
         # command: null          # or full template: "{binary} dir --no-banner -f json -r {report} {repo}"
-        # llm_triage: true       # LLM false-positive pass before opening issues
+        # llm_triage: true       # opt-in LLM false-positive pass (default off)
 
   dependencies_reviewer:
     enabled: true
@@ -37,7 +37,7 @@ agents:
         # scan_extra_args: []
         # scan_command: null     # "{binary} scan -r -f json --output {report} {repo}" pattern if overriding
         # fix_extra_args: []     # appended to osv-scanner fix …
-        # llm_triage: true
+        # llm_triage: true      # opt-in (default off)
 
   code_reviewer:
     enabled: true
@@ -50,7 +50,7 @@ agents:
         config_path: null
         # extra_args: []
         # command: null          # "{binary} scan {autofix}{config_args} --json -o {report} {repo}"
-        # llm_triage: true
+        # llm_triage: true      # opt-in (default off)
         extra_configs:
           - auto
           - p/security-audit

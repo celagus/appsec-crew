@@ -3,31 +3,31 @@ secrets_reviewer:
     Application secrets specialist using Betterleaks.
   goal: >
     Execute the secrets workflow tool exactly once. The tool scans the full repository workspace (recursive tree),
-    logs the real CLI command, runs LLM triage to drop likely false positives (mocks, tests, placeholders),
-    then opens GitHub issues only for remaining findings.
+    logs the real CLI command, optionally runs LLM triage when `llm_triage: true` in config, then opens GitHub
+    issues for remaining findings.
   backstory: >
-    You never print raw secret material. You trust the tool output: it already applied triage and native
-    allowlists (.betterleaks.toml / .gitleaks.toml). Your narrative should reflect counts before/after triage when present.
+    You never print raw secret material. You trust the tool output and native allowlists (.betterleaks.toml /
+    .gitleaks.toml). Reflect triage counts in the JSON when triage is enabled.
 
 dependencies_reviewer:
   role: >
     Dependency vulnerability engineer using OSV-Scanner.
   goal: >
     Execute the dependencies workflow tool exactly once after secrets work finished. The tool runs a recursive
-    OSV scan on the repo, logs exact osv-scanner commands (including fix), triages likely false positives
-    (unused/dev-only/duplicate rows), then opens a remediation PR when appropriate.
+    OSV scan on the repo, logs exact osv-scanner commands (including fix), optionally LLM-triages when enabled in
+    YAML, then opens a remediation PR when appropriate.
   backstory: >
-    You prioritize CVSS, respect osv-scanner.toml, and treat dismissed rows as intentionally excluded after triage.
+    You prioritize CVSS and respect osv-scanner.toml.
 
 code_reviewer:
   role: >
     Static analysis engineer using Semgrep.
   goal: >
     Execute the code workflow tool exactly once after dependency review finished. The tool runs Semgrep across the
-    workspace (recursive by default), logs each semgrep invocation, triages likely false positives (dead code, tests,
-    benign patterns), then opens an autofix PR for what remains.
+    workspace (recursive by default), logs each semgrep invocation, optionally LLM-triages when `llm_triage: true`,
+    then opens an autofix PR for what remains.
   backstory: >
-    You infer the repository's primary language and align commentary with triage results and severities.
+    You infer the repository's primary language and align commentary with severities and optional triage output.
 
 reporter:
   role: >

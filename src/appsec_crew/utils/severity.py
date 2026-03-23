@@ -20,13 +20,15 @@ def include_osv_vuln_without_cvss(level: str) -> bool:
     return level.lower() == "low"
 
 
-# Semgrep: rank findings; higher = more severe
+# Semgrep: rank findings; higher = more severe.
+# WARNING is rank 4 (same band as HIGH/ERROR): many security rules use WARNING for real issues; mapping it to 2
+# caused almost everything below CRITICAL to disappear when global.min_severity was ``high``.
 _SEMGREP_RANK: dict[str, int] = {
     "CRITICAL": 5,
     "HIGH": 4,
     "ERROR": 4,
+    "WARNING": 4,
     "MEDIUM": 3,
-    "WARNING": 2,
     "LOW": 1,
     "INFO": 0,
 }
@@ -44,9 +46,9 @@ def semgrep_finding_rank(finding: dict) -> int:
     """
     Map Semgrep JSON finding to a numeric rank.
 
-    Registry rules often omit ``extra.severity``; those used to default to WARNING (rank 2) and were then
-    dropped when ``global.min_severity`` was ``high`` (needs rank ≥ 4). Missing severity is treated as **HIGH**
-    so unlabeled findings are still actionable at the ``high`` threshold; explicit ``INFO`` / ``LOW`` stay low.
+    ``WARNING`` is treated like HIGH/ERROR (rank 4) for ``min_severity: high`` — Semgrep uses WARNING for many
+    security findings. Missing / unknown labels default to HIGH (rank 4). Explicit ``INFO`` / ``LOW`` / ``MEDIUM``
+    use the table above.
     """
     raw_ex = finding.get("extra")
     extra = raw_ex if isinstance(raw_ex, dict) else {}
@@ -58,7 +60,7 @@ def semgrep_finding_rank(finding: dict) -> int:
         sev = str(finding["severity"]).strip().upper()
     if not sev:
         return _SEMGREP_RANK["HIGH"]
-    return _SEMGREP_RANK.get(sev, _SEMGREP_RANK["WARNING"])
+    return _SEMGREP_RANK.get(sev, _SEMGREP_RANK["HIGH"])
 
 
 def min_rank_for_semgrep(level: str) -> int:

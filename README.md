@@ -107,8 +107,8 @@ An explicit `--config /path` must point to an existing file.
 
 - **Scope**: Betterleaks runs `dir` on the repository root (full tree), OSV uses `scan -r`, Semgrep uses `scan` on the repo path (recursive by default).
 - **Logging**: Each subprocess prints a line to **stderr**: `[appsec-crew] executing: {"tool":"…","argv":[…],"shell":"…"}` plus the same argv is stored in workflow JSON as `commands_executed`.
-- **False positives**: After native filters (e.g. `.betterleaks.toml`, `osv-scanner.toml`, severity floors), an optional **LLM triage** pass (same model/keys as the agent) can dismiss likely false positives. Set `llm_triage: false` under `tools.betterleaks`, `tools.osv_scanner`, or `tools.semgrep` to skip it.
-- **Semgrep severity**: `global.min_severity` filters by rule severity. Findings **without** a Semgrep severity field are treated as **HIGH** so they are not silently dropped when you use `min_severity: high` (many registry rules omit the field). Explicit `INFO` / `LOW` / `MEDIUM` still follow the map.
+- **False positives**: Optional **LLM triage** (`llm_triage: true` under each tool block) can dismiss likely false positives after scanning. **Default is off** so CI matches raw scanner output unless you opt in.
+- **Semgrep severity**: `global.min_severity` filters by rule severity. **`WARNING` counts like HIGH/ERROR** (rank 4) for the `high` threshold — Semgrep labels many real issues as WARNING. Missing / unknown severities default to HIGH. Explicit `INFO` / `LOW` / `MEDIUM` use the usual map.
 - **Overrides**: Append flags with `extra_args` / `scan_extra_args` / `fix_extra_args`, or replace the built argv with a formatted `command` / `scan_command` string. Placeholders: `{binary}`, `{repo}`, `{report}`, `{config}`; Semgrep also `{config_args}` (quoted `--config …` tokens) and `{autofix}` (`--autofix ` or empty). Put a **space before `--json`** in custom Semgrep templates, e.g. `… {config_args} --json -o {report} {repo}`.
 
 ---

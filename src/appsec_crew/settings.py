@@ -241,7 +241,7 @@ def _load_secrets_reviewer(block: dict[str, Any]) -> SecretsReviewerSettings:
         betterleaks_config_path=bl.get("config_path"),
         betterleaks_extra_args=_str_list(bl.get("extra_args")),
         betterleaks_command=cmd_s,
-        llm_triage_findings=bool(bl.get("llm_triage", True)),
+        llm_triage_findings=bool(bl.get("llm_triage", False)),
     )
 
 
@@ -258,7 +258,7 @@ def _load_dependencies_reviewer(block: dict[str, Any]) -> DependenciesReviewerSe
         osv_scan_extra_args=_str_list(osv.get("scan_extra_args")),
         osv_scan_command=scan_cmd_s,
         osv_fix_extra_args=_str_list(osv.get("fix_extra_args")),
-        llm_triage_findings=bool(osv.get("llm_triage", True)),
+        llm_triage_findings=bool(osv.get("llm_triage", False)),
     )
 
 
@@ -280,7 +280,7 @@ def _load_code_reviewer(block: dict[str, Any]) -> CodeReviewerSettings:
         semgrep_extra_configs=extras,
         semgrep_extra_args=_str_list(sg.get("extra_args")),
         semgrep_command=scmd_s,
-        llm_triage_findings=bool(sg.get("llm_triage", True)),
+        llm_triage_findings=bool(sg.get("llm_triage", False)),
     )
 
 

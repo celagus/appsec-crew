@@ -85,6 +85,16 @@ def test_reporter_jira_nested_under_tools(tmp_path: Path, monkeypatch) -> None:
     assert s.reporter.jira.project_key == "SEC"
 
 
+def test_llm_triage_defaults_false(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    cfg = tmp_path / "appsec_crew.yaml"
+    cfg.write_text(yaml.safe_dump({"global": {"github": {}}, "agents": _minimal_agents()}), encoding="utf-8")
+    s = load_settings(cfg)
+    assert s.secrets_reviewer.llm_triage_findings is False
+    assert s.dependencies_reviewer.llm_triage_findings is False
+    assert s.code_reviewer.llm_triage_findings is False
+
+
 def test_tool_cli_overrides_parse(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     agents = _minimal_agents()

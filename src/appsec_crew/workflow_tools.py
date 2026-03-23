@@ -17,7 +17,7 @@ class SecretsReviewerTool(BaseTool):
     name: str = "secrets_reviewer_workflow"
     description: str = (
         "Runs Betterleaks recursively over the repo workspace, logs the exact CLI to stderr, "
-        "LLM-triages likely false positives, then opens one GitHub issue per remaining finding. "
+        "optionally LLM-triages if llm_triage is true in YAML, then opens one GitHub issue per remaining finding. "
         "Returns JSON with commands_executed and dismissed_findings. Call once."
     )
 
@@ -29,7 +29,7 @@ class DependenciesReviewerTool(BaseTool):
     name: str = "dependencies_reviewer_workflow"
     description: str = (
         "Runs OSV-Scanner recursively on the repo (-r), logs argv (scan + fix), filters by min CVSS, "
-        "LLM-triages likely false-positive rows, applies osv-scanner fix where supported, opens one PR. "
+        "optional LLM triage if enabled in YAML, applies osv-scanner fix where supported, opens one PR. "
         "Returns JSON with commands_executed and dismissed_findings. Call once."
     )
 
@@ -41,7 +41,7 @@ class CodeReviewerTool(BaseTool):
     name: str = "code_reviewer_workflow"
     description: str = (
         "Detects the dominant source language, runs Semgrep scan on the repo tree (recursive), logs argv, "
-        "filters by min severity, LLM-triages false positives, applies autofix, opens a PR. "
+        "filters by min severity, optional LLM triage if enabled, applies autofix, opens a PR. "
         "Returns JSON with commands_executed and dismissed_findings. Call once."
     )
 

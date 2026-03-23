@@ -19,9 +19,11 @@ def test_filter_semgrep_high_excludes_medium() -> None:
         {"extra": {"severity": "MEDIUM"}},
         {"extra": {"severity": "HIGH"}},
         {"extra": {"severity": "CRITICAL"}},
+        {"extra": {"severity": "WARNING"}},
+        {"extra": {"severity": "ERROR"}},
     ]
     out = filter_semgrep_by_min_severity(findings, "high")
-    assert len(out) == 2
+    assert len(out) == 4
 
 
 def test_filter_semgrep_high_keeps_missing_severity() -> None:
@@ -35,3 +37,13 @@ def test_filter_semgrep_high_keeps_missing_severity() -> None:
     assert len(out) == 2
     assert out[0]["extra"]["message"] == "no severity field"
     assert out[1]["extra"]["severity"] == "HIGH"
+
+
+def test_filter_semgrep_critical_only_critical() -> None:
+    findings = [
+        {"extra": {"severity": "CRITICAL"}},
+        {"extra": {"severity": "HIGH"}},
+        {"extra": {"severity": "ERROR"}},
+    ]
+    out = filter_semgrep_by_min_severity(findings, "critical")
+    assert len(out) == 1
