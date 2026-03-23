@@ -4,10 +4,26 @@ name: AppSec Crew (reusable)
 on:
   workflow_call:
     inputs:
+      install_from_github:
+        type: boolean
+        description: >
+          If true, clone celagus/appsec-crew (see appsec_crew_repository / appsec_crew_ref) and pip install
+          from there. Use this when the caller repo does not vendor the package (no local pyproject.toml).
+        default: false
+      appsec_crew_repository:
+        type: string
+        description: Owner/repo to clone when install_from_github is true
+        default: celagus/appsec-crew
+      appsec_crew_ref:
+        type: string
+        description: Branch, tag, or SHA for the AppSec Crew checkout
+        default: main
       package_path:
         type: string
-        description: Relative path from repo root to this package (directory with pyproject.toml)
-        required: true
+        description: >
+          Relative path from caller repo root to the package (directory with pyproject.toml).
+          Ignored when install_from_github is true (use for vendored/submodule copies).
+        default: "."
       scan_path:
         type: string
         description: Directory to scan (usually repository root ".")
@@ -37,10 +53,18 @@ jobs:
   appsec-crew:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout caller repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout AppSec Crew package
+        if: ${{ inputs.install_from_github }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.appsec_crew_repository }}
+          ref: ${{ inputs.appsec_crew_ref }}
+          path: .appsec-crew-checkout
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -69,9 +93,14 @@ jobs:
 
       - name: Install Semgrep + AppSec Crew
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           pip install semgrep
-          pip install "./${{ inputs.package_path }}"
+          if ${{ inputs.install_from_github }}; then
+            pip install "./.appsec-crew-checkout"
+          else
+            pip install "./${{ inputs.package_path }}"
+          fi
 
       - name: Run AppSec Crew
         env:

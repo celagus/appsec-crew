@@ -135,7 +135,7 @@ This repo publishes:
 | -------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `[ci.yml](./.github/workflows/ci.yml)`                                     | `pytest` on push / PR                                   |
 | `[appsec-crew-reusable.yml](./.github/workflows/appsec-crew-reusable.yml)` | **Reusable** — install scanners + run `appsec-crew`     |
-| `[dogfood.yml](./.github/workflows/dogfood.yml)`                           | Runs the crew against **this** repo (`package_path: .`) |
+| `[run-reusable.yml](./.github/workflows/run-reusable.yml)`                 | Dogfood: calls the reusable workflow with `package_path: .` |
 
 
 ### Reusable workflow inputs
@@ -143,7 +143,9 @@ This repo publishes:
 
 | Input                                         | Description                                                                                                             |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `package_path`                                | Path from **caller** checkout root to a folder containing this package’s `pyproject.toml` (vendored/submodule monorepo) |
+| `install_from_github`                         | If **true**, clone `appsec_crew_repository` at `appsec_crew_ref` and `pip install` from there (typical for app repos that do not vendor this package). |
+| `appsec_crew_repository` / `appsec_crew_ref`    | Used when `install_from_github` is true (default repo `celagus/appsec-crew`, ref `main`).                               |
+| `package_path`                                | When `install_from_github` is **false**: path from caller root to a folder with this package’s `pyproject.toml` (vendor/submodule). Default `.` (same repo as the workflow). |
 | `scan_path`                                   | Directory to scan (usually `.`)                                                                                         |
 | `config_file`                                 | Relative path to `appsec_crew.yaml`, or **empty** for [auto-resolution](#configuration-resolution)                      |
 | `betterleaks_version` / `osv_scanner_version` | Release tags for binaries                                                                                               |
@@ -151,9 +153,9 @@ This repo publishes:
 
 Use `secrets: inherit` (or map secrets) for `GITHUB_TOKEN`, `OPENAI_API_KEY`, and optional reporter secrets.
 
-### Example — pull request (consumer repository)
+### Example — pull request (install from GitHub; no vendored copy)
 
-Create `.github/workflows/appsec-pr.yml` in **your** app repo:
+Most application repos should install the package from this repository:
 
 ```yaml
 name: AppSec Crew
@@ -171,13 +173,29 @@ jobs:
   scan:
     uses: celagus/appsec-crew/.github/workflows/appsec-crew-reusable.yml@v1
     with:
-      package_path: third_party/appsec-crew
+      install_from_github: true
+      appsec_crew_ref: main
       scan_path: .
       config_file: ""
     secrets: inherit
 ```
 
-Adjust `package_path` to where you **vendor** this package (submodule, subtree, or copy). Pin `@v1` to a **tag** or **commit SHA** you trust.
+Pin `uses: ...@v1` (or a **commit SHA**) to a revision you trust; match `appsec_crew_ref` to that line if you need an exact pairing.
+
+### Example — pull request (vendored package in monorepo)
+
+If you copy or submodule this repo under e.g. `third_party/appsec-crew`:
+
+```yaml
+jobs:
+  scan:
+    uses: celagus/appsec-crew/.github/workflows/appsec-crew-reusable.yml@v1
+    with:
+      package_path: third_party/appsec-crew
+      scan_path: .
+      config_file: ""
+    secrets: inherit
+```
 
 ### Example — scheduled scan (default branch)
 
@@ -198,7 +216,8 @@ jobs:
   scan:
     uses: celagus/appsec-crew/.github/workflows/appsec-crew-reusable.yml@v1
     with:
-      package_path: third_party/appsec-crew
+      install_from_github: true
+      appsec_crew_ref: main
       scan_path: .
       config_file: ""
     secrets: inherit
