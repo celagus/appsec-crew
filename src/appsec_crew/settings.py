@@ -110,6 +110,9 @@ class SecretsReviewerSettings:
     llm: LlmAgentConfig = field(default_factory=LlmAgentConfig)
     betterleaks_binary: str = "betterleaks"
     betterleaks_config_path: str | None = None
+    betterleaks_extra_args: list[str] = field(default_factory=list)
+    betterleaks_command: str | None = None
+    llm_triage_findings: bool = True
 
 
 @dataclass
@@ -118,6 +121,10 @@ class DependenciesReviewerSettings:
     llm: LlmAgentConfig = field(default_factory=LlmAgentConfig)
     osv_scanner_binary: str = "osv-scanner"
     osv_config_path: str | None = None
+    osv_scan_extra_args: list[str] = field(default_factory=list)
+    osv_scan_command: str | None = None
+    osv_fix_extra_args: list[str] = field(default_factory=list)
+    llm_triage_findings: bool = True
 
 
 @dataclass
@@ -127,6 +134,9 @@ class CodeReviewerSettings:
     semgrep_binary: str = "semgrep"
     semgrep_config_path: str | None = None
     semgrep_extra_configs: list[str] = field(default_factory=list)
+    semgrep_extra_args: list[str] = field(default_factory=list)
+    semgrep_command: str | None = None
+    llm_triage_findings: bool = True
 
 
 @dataclass
@@ -211,25 +221,44 @@ def _resolve_secret(optional_value: str | None, env_name: str) -> str | None:
     return env_val
 
 
+def _str_list(val: Any) -> list[str]:
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return [str(x) for x in val if x is not None and str(x).strip() != ""]
+    return []
+
+
 def _load_secrets_reviewer(block: dict[str, Any]) -> SecretsReviewerSettings:
     tools = block.get("tools") or {}
     bl = tools.get("betterleaks") or {}
+    cmd = bl.get("command")
+    cmd_s = str(cmd).strip() if cmd is not None and str(cmd).strip() else None
     return SecretsReviewerSettings(
         enabled=bool(block.get("enabled", True)),
         llm=_parse_llm(block.get("llm")),
         betterleaks_binary=str(bl.get("binary", "betterleaks")),
         betterleaks_config_path=bl.get("config_path"),
+        betterleaks_extra_args=_str_list(bl.get("extra_args")),
+        betterleaks_command=cmd_s,
+        llm_triage_findings=bool(bl.get("llm_triage", True)),
     )
 
 
 def _load_dependencies_reviewer(block: dict[str, Any]) -> DependenciesReviewerSettings:
     tools = block.get("tools") or {}
     osv = tools.get("osv_scanner") or {}
+    scan_cmd = osv.get("scan_command")
+    scan_cmd_s = str(scan_cmd).strip() if scan_cmd is not None and str(scan_cmd).strip() else None
     return DependenciesReviewerSettings(
         enabled=bool(block.get("enabled", True)),
         llm=_parse_llm(block.get("llm")),
         osv_scanner_binary=str(osv.get("binary", "osv-scanner")),
         osv_config_path=osv.get("config_path"),
+        osv_scan_extra_args=_str_list(osv.get("scan_extra_args")),
+        osv_scan_command=scan_cmd_s,
+        osv_fix_extra_args=_str_list(osv.get("fix_extra_args")),
+        llm_triage_findings=bool(osv.get("llm_triage", True)),
     )
 
 
@@ -241,12 +270,17 @@ def _load_code_reviewer(block: dict[str, Any]) -> CodeReviewerSettings:
         extras = list(DEFAULT_SEMGREP_EXTRA_CONFIGS)
     else:
         extras = list(raw_extras)
+    scmd = sg.get("command")
+    scmd_s = str(scmd).strip() if scmd is not None and str(scmd).strip() else None
     return CodeReviewerSettings(
         enabled=bool(block.get("enabled", True)),
         llm=_parse_llm(block.get("llm")),
         semgrep_binary=str(sg.get("binary", "semgrep")),
         semgrep_config_path=sg.get("config_path"),
         semgrep_extra_configs=extras,
+        semgrep_extra_args=_str_list(sg.get("extra_args")),
+        semgrep_command=scmd_s,
+        llm_triage_findings=bool(sg.get("llm_triage", True)),
     )
 
 

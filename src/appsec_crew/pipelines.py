@@ -28,7 +28,13 @@ from appsec_crew.scanners.osv_scan import (
     run_osv_scan,
 )
 from appsec_crew.scanners.semgrep_scan import build_semgrep_config_args, detect_primary_language, run_semgrep
-from appsec_crew.settings import AppSecSettings
+from appsec_crew.triage_llm import llm_triage_batch, partition_by_dismiss_indices
+from appsec_crew.settings import (
+    AppSecSettings,
+    CodeReviewerSettings,
+    DependenciesReviewerSettings,
+    SecretsReviewerSettings,
+)
 from appsec_crew.utils.cvss import max_cvss_score
 from appsec_crew.utils.filters import filter_osv_by_min_cvss, filter_semgrep_by_min_severity
 from appsec_crew.utils.severity import (
@@ -41,6 +47,131 @@ from appsec_crew.utils.severity import (
 def _git_remote_host() -> str:
     u = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     return u.replace("https://", "").replace("http://", "").rstrip("/")
+
+
+def _triage_secrets_findings(
+    sr: SecretsReviewerSettings, findings: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not findings or not sr.llm_triage_findings or not sr.llm.api_key:
+        return findings, []
+    items = []
+    for i, f in enumerate(findings):
+        rid = f.get("RuleID") or f.get("rule_id") or "?"
+        path = f.get("File") or f.get("file") or "?"
+        line = f.get("StartLine") or f.get("line") or "?"
+        items.append({"index": i, "rule_id": rid, "path": str(path), "line": line})
+    guidance = (
+        "Dismiss likely false positives: mocks/examples/placeholders, test fixtures, sample `.env` in docs, "
+        "strings clearly labeled fake, or paths that cannot hold production secrets."
+    )
+    meta = llm_triage_batch(
+        sr.llm,
+        agent_role="secrets reviewer",
+        items=items,
+        guidance=guidance,
+    )
+    return partition_by_dismiss_indices(findings, meta)
+
+
+def _triage_osv_rows(
+    dr: DependenciesReviewerSettings, rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not rows or not dr.llm_triage_findings or not dr.llm.api_key:
+        return rows, []
+    items = []
+    for i, row in enumerate(rows):
+        pkg = row.get("package") if isinstance(row.get("package"), dict) else {}
+        vulns = [v for v in (row.get("vulnerabilities") or []) if isinstance(v, dict)][:10]
+        vid = [str(v.get("id") or "?") for v in vulns]
+        items.append(
+            {
+                "index": i,
+                "package": pkg.get("name"),
+                "ecosystem": pkg.get("ecosystem"),
+                "vuln_ids": vid,
+            }
+        )
+    guidance = (
+        "Dismiss likely false positives: dependency not reachable from shipped code, dev-only tooling with no prod path, "
+        "duplicate advisory rows, or package versions not actually built into the artifact."
+    )
+    meta = llm_triage_batch(
+        dr.llm,
+        agent_role="dependency vulnerability reviewer",
+        items=items,
+        guidance=guidance,
+    )
+    return partition_by_dismiss_indices(rows, meta)
+
+
+def _triage_semgrep_findings(
+    cr: CodeReviewerSettings, findings: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not findings or not cr.llm_triage_findings or not cr.llm.api_key:
+        return findings, []
+    items = []
+    for i, f in enumerate(findings):
+        extra = f.get("extra") if isinstance(f.get("extra"), dict) else {}
+        items.append(
+            {
+                "index": i,
+                "check_id": f.get("check_id"),
+                "path": f.get("path"),
+                "message": str(extra.get("message") or "")[:450],
+            }
+        )
+    guidance = (
+        "Dismiss likely false positives: test-only code, dead branches, benign patterns, framework boilerplate, "
+        "or findings inconsistent with how the application actually uses the flagged code."
+    )
+    meta = llm_triage_batch(
+        cr.llm,
+        agent_role="static analysis reviewer",
+        items=items,
+        guidance=guidance,
+    )
+    return partition_by_dismiss_indices(findings, meta)
+
+
+def _public_secret_dismissals(dismissed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for d in dismissed:
+        out.append(
+            {
+                "rule_id": d.get("RuleID") or d.get("rule_id"),
+                "path": d.get("File") or d.get("file"),
+                "line": d.get("StartLine") or d.get("line"),
+                "reason": d.get("_dismiss_reason"),
+            }
+        )
+    return out
+
+
+def _public_osv_dismissals(dismissed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for d in dismissed:
+        pkg = d.get("package") if isinstance(d.get("package"), dict) else {}
+        out.append(
+            {
+                "package": pkg.get("name"),
+                "ecosystem": pkg.get("ecosystem"),
+                "reason": d.get("_dismiss_reason"),
+            }
+        )
+    return out
+
+
+def _public_semgrep_dismissals(dismissed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for d in dismissed:
+        out.append(
+            {
+                "check_id": d.get("check_id"),
+                "path": d.get("path"),
+                "reason": d.get("_dismiss_reason"),
+            }
+        )
+    return out
 
 
 def _github_client(settings: AppSecSettings) -> GitHubApi | None:
@@ -62,7 +193,19 @@ def run_secrets_pipeline(ctx: RuntimeContext) -> str:
     tmp = Path(tempfile.mkdtemp(prefix="appsec-crew-"))
     report = tmp / "betterleaks.json"
     cfg = Path(sr.betterleaks_config_path) if sr.betterleaks_config_path else None
-    findings = run_betterleaks_scan(repo, sr.betterleaks_binary, cfg, report)
+    commands: list[str] = []
+    raw_findings = run_betterleaks_scan(
+        repo,
+        sr.betterleaks_binary,
+        cfg,
+        report,
+        extra_args=sr.betterleaks_extra_args,
+        command_template=sr.betterleaks_command,
+        commands_log=commands,
+    )
+    scanner_total = len(raw_findings)
+    findings, dismissed_raw = _triage_secrets_findings(sr, raw_findings)
+    dismissed_pub = _public_secret_dismissals(dismissed_raw)
     gh = _github_client(s)
     issue_urls: list[str] = []
     for f in findings:
@@ -81,7 +224,11 @@ def run_secrets_pipeline(ctx: RuntimeContext) -> str:
             iss = gh.create_issue(title, body, labels=["security", "appsec-crew"])
             issue_urls.append(iss.get("html_url", ""))
     ctx.state["secrets_reviewer"] = {
+        "commands_executed": commands,
         "issue_urls": [u for u in issue_urls if u],
+        "scanner_findings_total": scanner_total,
+        "findings_after_triage": len(findings),
+        "dismissed_findings": dismissed_pub,
         "findings_total": len(findings),
         "executed": True,
     }
@@ -103,9 +250,28 @@ def run_dependencies_pipeline(ctx: RuntimeContext) -> str:
     report = tmp / "osv.json"
     cfg = Path(dr.osv_config_path) if dr.osv_config_path else (repo / "osv-scanner.toml")
     cfg_path = cfg if cfg.is_file() else None
-    rows = run_osv_scan(repo, dr.osv_scanner_binary, cfg_path, report)
+    commands: list[str] = []
+    rows = run_osv_scan(
+        repo,
+        dr.osv_scanner_binary,
+        cfg_path,
+        report,
+        extra_args=dr.osv_scan_extra_args,
+        command_template=dr.osv_scan_command,
+        commands_log=commands,
+    )
     rows = filter_osv_by_min_cvss(rows, cvss_min, max_cvss_score, include_unknown)
-    ctx.state["dependencies_reviewer"] = {"vulnerable_rows": len(rows), "pr_url": None, "executed": True}
+    after_cvss = len(rows)
+    rows, dismissed_raw = _triage_osv_rows(dr, rows)
+    dismissed_pub = _public_osv_dismissals(dismissed_raw)
+    ctx.state["dependencies_reviewer"] = {
+        "vulnerable_rows": len(rows),
+        "scanner_rows_after_cvss": after_cvss,
+        "dismissed_findings": dismissed_pub,
+        "commands_executed": commands,
+        "pr_url": None,
+        "executed": True,
+    }
 
     if not rows:
         return json.dumps(ctx.state["dependencies_reviewer"], indent=2)
@@ -128,9 +294,21 @@ def run_dependencies_pipeline(ctx: RuntimeContext) -> str:
 
     for _hint, path in targets:
         if path.name == "package-lock.json":
-            run_osv_fix_inplace(path, dr.osv_scanner_binary, cvss_min)
+            run_osv_fix_inplace(
+                path,
+                dr.osv_scanner_binary,
+                cvss_min,
+                extra_args=dr.osv_fix_extra_args,
+                commands_log=commands,
+            )
         elif path.name == "pom.xml":
-            run_osv_fix_override_pom(path, dr.osv_scanner_binary, cvss_min)
+            run_osv_fix_override_pom(
+                path,
+                dr.osv_scanner_binary,
+                cvss_min,
+                extra_args=dr.osv_fix_extra_args,
+                commands_log=commands,
+            )
 
     label = human_severity_label(min_lvl)
     if not commit_all(
@@ -170,11 +348,27 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
     config_args = build_semgrep_config_args(repo, cfg_path, cr.semgrep_extra_configs)
     tmp = Path(tempfile.mkdtemp(prefix="appsec-crew-"))
     report = tmp / "semgrep.json"
-    findings = run_semgrep(repo, cr.semgrep_binary, config_args, report, autofix=False)
+    commands: list[str] = []
+    findings = run_semgrep(
+        repo,
+        cr.semgrep_binary,
+        config_args,
+        report,
+        autofix=False,
+        extra_args=cr.semgrep_extra_args,
+        command_template=cr.semgrep_command,
+        commands_log=commands,
+    )
     findings = filter_semgrep_by_min_severity(findings, min_lvl)
+    after_filter = len(findings)
+    findings, dismissed_raw = _triage_semgrep_findings(cr, findings)
+    dismissed_pub = _public_semgrep_dismissals(dismissed_raw)
     ctx.state["code_reviewer"] = {
         "primary_language": lang,
         "findings": len(findings),
+        "scanner_findings_after_severity": after_filter,
+        "dismissed_findings": dismissed_pub,
+        "commands_executed": commands,
         "pr_url": None,
         "executed": True,
     }
@@ -190,7 +384,16 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
     branch = f"appsec-crew/semgrep-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     ensure_identity(repo, os.environ.get("GIT_COMMITTER_NAME", "appsec-crew"), os.environ.get("GIT_COMMITTER_EMAIL", "appsec-crew@users.noreply.github.com"))
     create_branch(repo, branch)
-    run_semgrep(repo, cr.semgrep_binary, config_args, tmp / "semgrep-autofix.json", autofix=True)
+    run_semgrep(
+        repo,
+        cr.semgrep_binary,
+        config_args,
+        tmp / "semgrep-autofix.json",
+        autofix=True,
+        extra_args=cr.semgrep_extra_args,
+        command_template=cr.semgrep_command,
+        commands_log=commands,
+    )
 
     reasons = "\n".join(
         f"- `{f.get('check_id')}` @ `{f.get('path')}` — {((f.get('extra') or {}).get('message') or '')[:200]}"
@@ -236,24 +439,71 @@ def _markdown_report(ctx: RuntimeContext) -> str:
         f"- **Minimum severity (global)**: **{min_s}**",
         f"- **UTC time**: {datetime.now(timezone.utc).isoformat()}",
         "",
+        "Scans target the **checked-out repository workspace** recursively by default "
+        "(Betterleaks `dir` over the tree, OSV `-r`, Semgrep `scan` on the repo root).",
+        "",
         "### secrets-reviewer",
         "",
     ]
     sr = ctx.state.get("secrets_reviewer") or {}
-    lines.append(f"- Issues: {len(sr.get('issue_urls') or [])} (findings considered: {sr.get('findings_total', 'n/a')})")
+    lines.append(
+        f"- Issues opened: {len(sr.get('issue_urls') or [])} "
+        f"(after triage: **{sr.get('findings_after_triage', sr.get('findings_total', 'n/a'))}** actionable; "
+        f"scanner raw: **{sr.get('scanner_findings_total', 'n/a')}**)"
+    )
     for u in sr.get("issue_urls") or []:
         lines.append(f"  - {u}")
+    cmds = sr.get("commands_executed") or []
+    if cmds:
+        lines.append("- **Tool commands executed:**")
+        for c in cmds:
+            lines.append(f"  - `{c}`")
+    dis = sr.get("dismissed_findings") or []
+    if dis:
+        lines.append(f"- **Dismissed as likely false positives ({len(dis)}):**")
+        for d in dis[:30]:
+            lines.append(f"  - {d}")
+        if len(dis) > 30:
+            lines.append(f"  - … and {len(dis) - 30} more")
+
     lines += ["", "### dependencies-reviewer", ""]
     dr = ctx.state.get("dependencies_reviewer") or {}
-    lines.append(f"- Vulnerable dependency rows: {dr.get('vulnerable_rows', 'n/a')}")
+    lines.append(
+        f"- Vulnerable dependency rows (after CVSS filter + triage): **{dr.get('vulnerable_rows', 'n/a')}** "
+        f"(pre-triage post-filter: **{dr.get('scanner_rows_after_cvss', 'n/a')}**)"
+    )
     if dr.get("pr_url"):
         lines.append(f"- PR: {dr['pr_url']}")
+    dcmds = dr.get("commands_executed") or []
+    if dcmds:
+        lines.append("- **Tool commands executed:**")
+        for c in dcmds:
+            lines.append(f"  - `{c}`")
+    ddis = dr.get("dismissed_findings") or []
+    if ddis:
+        lines.append(f"- **Dismissed dependency rows ({len(ddis)}):**")
+        for d in ddis[:25]:
+            lines.append(f"  - {d}")
+
     lines += ["", "### code-reviewer", ""]
     cr = ctx.state.get("code_reviewer") or {}
     lines.append(f"- Primary language: `{cr.get('primary_language', '?')}`")
-    lines.append(f"- Semgrep findings (after min severity): {cr.get('findings', 'n/a')}")
+    lines.append(
+        f"- Semgrep findings (after min severity + triage): **{cr.get('findings', 'n/a')}** "
+        f"(pre-triage: **{cr.get('scanner_findings_after_severity', 'n/a')}**)"
+    )
     if cr.get("pr_url"):
         lines.append(f"- PR: {cr['pr_url']}")
+    ccmds = cr.get("commands_executed") or []
+    if ccmds:
+        lines.append("- **Tool commands executed:**")
+        for c in ccmds:
+            lines.append(f"  - `{c}`")
+    cdis = cr.get("dismissed_findings") or []
+    if cdis:
+        lines.append(f"- **Dismissed Semgrep findings ({len(cdis)}):**")
+        for d in cdis[:25]:
+            lines.append(f"  - {d}")
     return "\n".join(lines)
 
 
@@ -283,17 +533,21 @@ def run_reporter_pipeline(ctx: RuntimeContext) -> str:
         )
     ctx.state["reporter"]["jira_ticket"] = jira_key
 
+    sr_st = ctx.state.get("secrets_reviewer") or {}
+    dr_st = ctx.state.get("dependencies_reviewer") or {}
+    cr_st = ctx.state.get("code_reviewer") or {}
     payload = {
         "date": datetime.now(timezone.utc).isoformat(),
         "repo": repo_name,
         "results": {
-            "secrets-reviewer": (ctx.state.get("secrets_reviewer") or {}).get("issue_urls") or [],
-            "dependencies-reviewer": [((ctx.state.get("dependencies_reviewer") or {}).get("pr_url") or "")]
-            if (ctx.state.get("dependencies_reviewer") or {}).get("pr_url")
-            else [],
-            "code-reviewer": [((ctx.state.get("code_reviewer") or {}).get("pr_url") or "")]
-            if (ctx.state.get("code_reviewer") or {}).get("pr_url")
-            else [],
+            "secrets-reviewer": sr_st.get("issue_urls") or [],
+            "dependencies-reviewer": [((dr_st.get("pr_url") or ""))] if dr_st.get("pr_url") else [],
+            "code-reviewer": [((cr_st.get("pr_url") or ""))] if cr_st.get("pr_url") else [],
+        },
+        "dismissed_counts": {
+            "secrets-reviewer": len(sr_st.get("dismissed_findings") or []),
+            "dependencies-reviewer": len(dr_st.get("dismissed_findings") or []),
+            "code-reviewer": len(cr_st.get("dismissed_findings") or []),
         },
         "jira_ticket": jira_key,
     }

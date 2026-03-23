@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import shlex
 from pathlib import Path
 from typing import Any
 
+from appsec_crew.scanners.subprocess_run import run_scanner
 from appsec_crew.utils.cvss import max_cvss_score
 
 
@@ -28,17 +29,56 @@ def _flatten_osv_results(data: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def build_osv_scan_command(
+    repo: Path,
+    binary: str,
+    config_path: Path | None,
+    report_path: Path,
+    *,
+    extra_args: list[str] | None = None,
+    command_template: str | None = None,
+) -> list[str]:
+    """
+    Default: ``osv-scanner scan -r`` recursively scans the repository workspace.
+    Override with ``command_template`` (``{binary}``, ``{repo}``, ``{report}``, ``{config}``).
+    """
+    cfg = str(config_path) if config_path and config_path.is_file() else ""
+    if command_template and str(command_template).strip():
+        s = str(command_template).format(
+            binary=binary,
+            repo=str(repo),
+            report=str(report_path),
+            config=cfg,
+        )
+        return shlex.split(s)
+    cmd = [binary, "scan"]
+    if extra_args:
+        cmd += list(extra_args)
+    if cfg:
+        cmd += ["--config", cfg]
+    cmd += ["-r", "-f", "json", "--output", str(report_path), str(repo)]
+    return cmd
+
+
 def run_osv_scan(
     repo: Path,
     binary: str,
     config_path: Path | None,
     report_path: Path,
+    *,
+    extra_args: list[str] | None = None,
+    command_template: str | None = None,
+    commands_log: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    cmd = [binary, "scan", "-r", "-f", "json", "--output", str(report_path), str(repo)]
-    if config_path and config_path.is_file():
-        cmd[2:2] = ["--config", str(config_path)]
-
-    subprocess.run(cmd, cwd=str(repo), text=True, capture_output=True)
+    cmd = build_osv_scan_command(
+        repo,
+        binary,
+        config_path,
+        report_path,
+        extra_args=extra_args,
+        command_template=command_template,
+    )
+    run_scanner(cmd, cwd=repo, tool_label="osv-scanner", commands_log=commands_log)
 
     if not report_path.is_file():
         return []
@@ -82,7 +122,14 @@ def discover_remediation_targets(repo: Path) -> list[tuple[str, Path]]:
     return targets
 
 
-def run_osv_fix_inplace(lockfile: Path, binary: str, min_severity: float) -> subprocess.CompletedProcess[str]:
+def run_osv_fix_inplace(
+    lockfile: Path,
+    binary: str,
+    min_severity: float,
+    *,
+    extra_args: list[str] | None = None,
+    commands_log: list[str] | None = None,
+) -> Any:
     cmd = [
         binary,
         "fix",
@@ -91,13 +138,21 @@ def run_osv_fix_inplace(lockfile: Path, binary: str, min_severity: float) -> sub
         "in-place",
         "--min-severity",
         str(min_severity),
-        "-L",
-        str(lockfile),
     ]
-    return subprocess.run(cmd, cwd=str(lockfile.parent), text=True, capture_output=True)
+    if extra_args:
+        cmd += list(extra_args)
+    cmd += ["-L", str(lockfile)]
+    return run_scanner(cmd, cwd=lockfile.parent, tool_label="osv-scanner-fix", commands_log=commands_log)
 
 
-def run_osv_fix_override_pom(pom: Path, binary: str, min_severity: float) -> subprocess.CompletedProcess[str]:
+def run_osv_fix_override_pom(
+    pom: Path,
+    binary: str,
+    min_severity: float,
+    *,
+    extra_args: list[str] | None = None,
+    commands_log: list[str] | None = None,
+) -> Any:
     cmd = [
         binary,
         "fix",
@@ -106,7 +161,8 @@ def run_osv_fix_override_pom(pom: Path, binary: str, min_severity: float) -> sub
         "override",
         "--min-severity",
         str(min_severity),
-        "-M",
-        str(pom),
     ]
-    return subprocess.run(cmd, cwd=str(pom.parent), text=True, capture_output=True)
+    if extra_args:
+        cmd += list(extra_args)
+    cmd += ["-M", str(pom)]
+    return run_scanner(cmd, cwd=pom.parent, tool_label="osv-scanner-fix", commands_log=commands_log)
