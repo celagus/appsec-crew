@@ -1,19 +1,30 @@
 # Reusable workflow: install Betterleaks, OSV-Scanner, Semgrep; run AppSec Crew on the caller checkout.
-#
-# Bootstrap: checkout celagus/appsec-crew into `.appsec-crew-checkout` first. A relative `uses: ./.github/actions/…`
-# in a reusable workflow resolves against the **caller** workspace, so the composite cannot live at `./.github/...`
-# until that tree exists under $GITHUB_WORKSPACE.
-#
-# Ref for the clone: suffix of github.workflow_ref after `@` when it exists on celagus/appsec-crew.
-# On caller `pull_request` events, workflow_ref often ends in `refs/pull/N/merge` (caller-only) — then use
-# github.workflow_sha (commit GitHub resolved for this reusable workflow on celagus/appsec-crew).
-#
-# Optional `github_environment`: secrets only on a GitHub Environment (callers cannot set `environment:` on `uses:`).
+# Scanner versions come from appsec_crew.yaml (per-tool `version` under each agent), resolved before binaries are downloaded.
 name: AppSec Crew (reusable)
 
 on:
   workflow_call:
     inputs:
+      install_from_github:
+        type: boolean
+        description: >
+          If true, clone celagus/appsec-crew (see appsec_crew_repository / appsec_crew_ref) and pip install
+          from there. Use this when the caller repo does not vendor the package (no local pyproject.toml).
+        default: false
+      appsec_crew_repository:
+        type: string
+        description: Owner/repo to clone when install_from_github is true
+        default: celagus/appsec-crew
+      appsec_crew_ref:
+        type: string
+        description: Branch, tag, or SHA for the AppSec Crew checkout
+        default: main
+      package_path:
+        type: string
+        description: >
+          Relative path from caller repo root to the package (directory with pyproject.toml).
+          Ignored when install_from_github is true (use for vendored/submodule copies).
+        default: "."
       scan_path:
         type: string
         description: Directory to scan (usually repository root ".")
@@ -25,12 +36,6 @@ on:
           use appsec_crew.yaml in scan_path if present, otherwise the bundled default
           (reporter Jira/webhook/Splunk disabled).
         default: ""
-      github_environment:
-        type: string
-        description: >
-          Optional GitHub Environment name for this job. Use when secrets (OPENAI_API_KEY, etc.) are defined
-          only on that environment — callers cannot set `environment:` on a reusable-workflow `uses:` job.
-        default: ""
 
 permissions:
   contents: write
@@ -39,93 +44,107 @@ permissions:
 
 jobs:
   appsec-crew:
-    if: ${{ inputs.github_environment == '' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve celagus/appsec-crew ref
-        id: crew_ref
-        shell: bash
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout AppSec Crew package
+        if: ${{ inputs.install_from_github }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.appsec_crew_repository }}
+          ref: ${{ inputs.appsec_crew_ref }}
+          path: .appsec-crew-checkout
+
+      # Semgrep walks Git-tracked files; without this, `git` may refuse the checkout after Git 2.35.2+ and the
+      # scan sees zero files (0 results). See: https://semgrep.dev/docs/kb/semgrep-ci/git-command-errors
+      - name: Git safe.directory (Semgrep / git-aware tools)
+        run: git config --global --add safe.directory '*'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve scanner versions from appsec_crew.yaml
+        id: tool_versions
+        env:
+          INSTALL_FROM_GITHUB: ${{ inputs.install_from_github }}
+          PACKAGE_PATH: ${{ inputs.package_path }}
+          SCAN_PATH: ${{ inputs.scan_path }}
+          CONFIG_FILE: ${{ inputs.config_file }}
         run: |
           set -euo pipefail
-          # Keep in sync with appsec_crew.resolve_crew_checkout_ref (pytest: tests/test_resolve_crew_checkout_ref.py)
-          wf_ref="${{ github.workflow_ref }}"
-          ref="${wf_ref#*@}"
-          # refs/pull/* exist only on the caller repo, not on celagus/appsec-crew
-          case "${ref}" in
-            refs/pull/*|"")
-              ref="${{ github.workflow_sha }}"
-              ;;
-          esac
-          if [ -z "${ref}" ]; then
-            echo "::error::Could not resolve ref for celagus/appsec-crew checkout"
+          pip install --disable-pip-version-check 'pyyaml>=6'
+          if [ "${INSTALL_FROM_GITHUB}" = "true" ]; then
+            CREW_SRC="${GITHUB_WORKSPACE}/.appsec-crew-checkout/src"
+          else
+            CREW_SRC="${GITHUB_WORKSPACE}/${PACKAGE_PATH}/src"
+          fi
+          if [ ! -d "${CREW_SRC}/appsec_crew" ]; then
+            echo "::error::Could not find appsec_crew under ${CREW_SRC}. Use install_from_github: true, or vendor this package and set package_path so that \${package_path}/src/appsec_crew exists."
             exit 1
           fi
-          echo "celagus/appsec-crew checkout ref=${ref}" >&2
-          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          export PYTHONPATH="${CREW_SRC}"
+          REPO_ROOT="${GITHUB_WORKSPACE}/${SCAN_PATH}"
+          ARGS=(--repo "${REPO_ROOT}")
+          if [ -n "${CONFIG_FILE}" ]; then
+            ARGS+=(--config "${CONFIG_FILE}")
+          fi
+          python -m appsec_crew.ci_versions "${ARGS[@]}"
 
-      - name: Checkout celagus/appsec-crew (composite + pip install)
-        uses: actions/checkout@v6
-        with:
-          repository: celagus/appsec-crew
-          ref: ${{ steps.crew_ref.outputs.ref }}
-          path: .appsec-crew-checkout
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install OSV-Scanner
+        env:
+          VERSION: ${{ steps.tool_versions.outputs.osv_scanner_version }}
+        run: |
+          set -euxo pipefail
+          curl -sSL "https://github.com/google/osv-scanner/releases/download/${VERSION}/osv-scanner_linux_amd64" -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+          osv-scanner --version
 
-      - uses: ./.appsec-crew-checkout/.github/actions/appsec-crew-steps
-        with:
-          scan_path: ${{ inputs.scan_path }}
-          config_file: ${{ inputs.config_file }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          github_repository: ${{ github.repository }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          jira_email: ${{ secrets.JIRA_EMAIL }}
-          jira_api_token: ${{ secrets.JIRA_API_TOKEN }}
-          appsec_webhook_url: ${{ secrets.APPSEC_WEBHOOK_URL }}
-          splunk_hec_url: ${{ secrets.SPLUNK_HEC_URL }}
-          splunk_hec_token: ${{ secrets.SPLUNK_HEC_TOKEN }}
+      - name: Install Betterleaks
+        env:
+          VERSION: ${{ steps.tool_versions.outputs.betterleaks_version }}
+        run: |
+          set -euxo pipefail
+          ver="${VERSION#v}"
+          curl -sSL "https://github.com/betterleaks/betterleaks/releases/download/${VERSION}/betterleaks_${ver}_linux_x64.tar.gz" -o /tmp/bl.tgz
+          tar -xzf /tmp/bl.tgz -C /tmp
+          install -m 0755 /tmp/betterleaks /usr/local/bin/betterleaks
+          betterleaks version
 
-  appsec-crew-with-environment:
-    if: ${{ inputs.github_environment != '' }}
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.github_environment }}
-    steps:
-      - name: Resolve celagus/appsec-crew ref
-        id: crew_ref
-        shell: bash
+      - name: Install Semgrep + AppSec Crew
+        env:
+          SEMGREP_VERSION: ${{ steps.tool_versions.outputs.semgrep_version }}
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          pip install "semgrep==${SEMGREP_VERSION}"
+          if ${{ inputs.install_from_github }}; then
+            pip install "./.appsec-crew-checkout"
+          else
+            pip install "./${{ inputs.package_path }}"
+          fi
+
+      - name: Run AppSec Crew
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          APPSEC_WEBHOOK_URL: ${{ secrets.APPSEC_WEBHOOK_URL }}
+          SPLUNK_HEC_URL: ${{ secrets.SPLUNK_HEC_URL }}
+          SPLUNK_HEC_TOKEN: ${{ secrets.SPLUNK_HEC_TOKEN }}
+          GIT_COMMITTER_NAME: appsec-crew
+          GIT_COMMITTER_EMAIL: appsec-crew@users.noreply.github.com
         run: |
           set -euo pipefail
-          # Keep in sync with appsec_crew.resolve_crew_checkout_ref (pytest: tests/test_resolve_crew_checkout_ref.py)
-          wf_ref="${{ github.workflow_ref }}"
-          ref="${wf_ref#*@}"
-          case "${ref}" in
-            refs/pull/*|"")
-              ref="${{ github.workflow_sha }}"
-              ;;
-          esac
-          if [ -z "${ref}" ]; then
-            echo "::error::Could not resolve ref for celagus/appsec-crew checkout"
-            exit 1
+          if [ -n "${{ inputs.config_file }}" ]; then
+            appsec-crew --repo "${{ inputs.scan_path }}" --config "${{ inputs.config_file }}"
+          else
+            appsec-crew --repo "${{ inputs.scan_path }}"
           fi
-          echo "celagus/appsec-crew checkout ref=${ref}" >&2
-          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
-
-      - name: Checkout celagus/appsec-crew (composite + pip install)
-        uses: actions/checkout@v6
-        with:
-          repository: celagus/appsec-crew
-          ref: ${{ steps.crew_ref.outputs.ref }}
-          path: .appsec-crew-checkout
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: ./.appsec-crew-checkout/.github/actions/appsec-crew-steps
-        with:
-          scan_path: ${{ inputs.scan_path }}
-          config_file: ${{ inputs.config_file }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          github_repository: ${{ github.repository }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          jira_email: ${{ secrets.JIRA_EMAIL }}
-          jira_api_token: ${{ secrets.JIRA_API_TOKEN }}
-          appsec_webhook_url: ${{ secrets.APPSEC_WEBHOOK_URL }}
-          splunk_hec_url: ${{ secrets.SPLUNK_HEC_URL }}
-          splunk_hec_token: ${{ secrets.SPLUNK_HEC_TOKEN }}
