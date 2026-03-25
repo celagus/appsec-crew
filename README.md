@@ -79,6 +79,7 @@ Never commit secrets. Use **GitHub Actions secrets** and optional YAML overrides
 ```
 ├── assets/                    # Branding (ASCII banner, optional png mark)
 ├── examples/                  # `osv-scanner.toml.example`, `semgrep-local-rules.example.yml` (see [below](#example-configuration-and-tool-files))
+├── .github/actions/           # `appsec-crew-steps` composite (optional; use when caller needs `environment:`)
 ├── src/appsec_crew/           # Package source
 │   ├── bundled_appsec_crew.yaml
 │   ├── config/                # Crew agent & task YAML
@@ -208,6 +209,8 @@ Scanner **versions** are **not** workflow inputs: they come from `agents.*.tools
 
 
 Use `secrets: inherit` (or map secrets) for `GITHUB_TOKEN`, `OPENAI_API_KEY`, and optional reporter secrets.
+
+**GitHub Environments:** You cannot set `environment:` on a job that only calls a reusable workflow. If secrets (e.g. `OPENAI_API_KEY`) live only under an [Environment](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment), use a regular job with `runs-on` and [`appsec-crew-steps`](./.github/actions/appsec-crew-steps/action.yml) (`uses: celagus/appsec-crew/.github/actions/appsec-crew-steps@…`) so the job’s environment secrets are visible to the steps.
 
 ### Example — pull request (install from GitHub; no vendored copy)
 

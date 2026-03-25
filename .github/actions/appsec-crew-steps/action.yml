@@ -1,0 +1,130 @@
+# Run the same steps as appsec-crew-reusable.yml, but as a composite so the *caller* job can use
+# `runs-on` + `environment:` (GitHub forbids `environment` on jobs that only `uses:` a reusable workflow).
+name: AppSec Crew steps
+description: Install scanners and run appsec-crew (use from a job that sets environment when secrets are environment-scoped)
+
+inputs:
+  install_from_github:
+    required: true
+  appsec_crew_repository:
+    required: true
+  appsec_crew_ref:
+    required: true
+  package_path:
+    required: true
+  scan_path:
+    required: true
+  config_file:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout caller repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Checkout AppSec Crew package
+      if: ${{ inputs.install_from_github == 'true' }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.appsec_crew_repository }}
+        ref: ${{ inputs.appsec_crew_ref }}
+        path: .appsec-crew-checkout
+
+    - name: Git safe.directory (Semgrep / git-aware tools)
+      shell: bash
+      run: git config --global --add safe.directory '*'
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Resolve scanner versions from appsec_crew.yaml
+      id: tool_versions
+      shell: bash
+      env:
+        INSTALL_FROM_GITHUB: ${{ inputs.install_from_github }}
+        PACKAGE_PATH: ${{ inputs.package_path }}
+        SCAN_PATH: ${{ inputs.scan_path }}
+        CONFIG_FILE: ${{ inputs.config_file }}
+      run: |
+        set -euo pipefail
+        pip install --disable-pip-version-check 'pyyaml>=6'
+        if [ "${INSTALL_FROM_GITHUB}" = "true" ]; then
+          CREW_SRC="${GITHUB_WORKSPACE}/.appsec-crew-checkout/src"
+        else
+          CREW_SRC="${GITHUB_WORKSPACE}/${PACKAGE_PATH}/src"
+        fi
+        if [ ! -d "${CREW_SRC}/appsec_crew" ]; then
+          echo "::error::Could not find appsec_crew under ${CREW_SRC}. Use install_from_github: true, or vendor this package and set package_path."
+          exit 1
+        fi
+        export PYTHONPATH="${CREW_SRC}"
+        REPO_ROOT="${GITHUB_WORKSPACE}/${SCAN_PATH}"
+        ARGS=(--repo "${REPO_ROOT}")
+        if [ -n "${CONFIG_FILE}" ]; then
+          ARGS+=(--config "${CONFIG_FILE}")
+        fi
+        python -m appsec_crew.ci_versions "${ARGS[@]}"
+
+    - name: Install OSV-Scanner
+      shell: bash
+      env:
+        VERSION: ${{ steps.tool_versions.outputs.osv_scanner_version }}
+      run: |
+        set -euxo pipefail
+        curl -sSL "https://github.com/google/osv-scanner/releases/download/${VERSION}/osv-scanner_linux_amd64" -o /usr/local/bin/osv-scanner
+        chmod +x /usr/local/bin/osv-scanner
+        osv-scanner --version
+
+    - name: Install Betterleaks
+      shell: bash
+      env:
+        VERSION: ${{ steps.tool_versions.outputs.betterleaks_version }}
+      run: |
+        set -euxo pipefail
+        ver="${VERSION#v}"
+        curl -sSL "https://github.com/betterleaks/betterleaks/releases/download/${VERSION}/betterleaks_${ver}_linux_x64.tar.gz" -o /tmp/bl.tgz
+        tar -xzf /tmp/bl.tgz -C /tmp
+        install -m 0755 /tmp/betterleaks /usr/local/bin/betterleaks
+        betterleaks version
+
+    - name: Install Semgrep + AppSec Crew
+      shell: bash
+      env:
+        SEMGREP_VERSION: ${{ steps.tool_versions.outputs.semgrep_version }}
+        INSTALL_FROM_GITHUB: ${{ inputs.install_from_github }}
+        PACKAGE_PATH: ${{ inputs.package_path }}
+      run: |
+        set -euxo pipefail
+        python -m pip install --upgrade pip
+        pip install "semgrep==${SEMGREP_VERSION}"
+        if [ "${INSTALL_FROM_GITHUB}" = "true" ]; then
+          pip install "./.appsec-crew-checkout"
+        else
+          pip install "./${PACKAGE_PATH}"
+        fi
+
+    - name: Run AppSec Crew
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+        JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        APPSEC_WEBHOOK_URL: ${{ secrets.APPSEC_WEBHOOK_URL }}
+        SPLUNK_HEC_URL: ${{ secrets.SPLUNK_HEC_URL }}
+        SPLUNK_HEC_TOKEN: ${{ secrets.SPLUNK_HEC_TOKEN }}
+        GIT_COMMITTER_NAME: appsec-crew
+        GIT_COMMITTER_EMAIL: appsec-crew@users.noreply.github.com
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.config_file }}" ]; then
+          appsec-crew --repo "${{ inputs.scan_path }}" --config "${{ inputs.config_file }}"
+        else
+          appsec-crew --repo "${{ inputs.scan_path }}"
+        fi
