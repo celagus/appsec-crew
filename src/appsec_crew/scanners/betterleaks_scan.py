@@ -16,11 +16,16 @@ def build_betterleaks_command(
     config_path: Path | None,
     report_path: Path,
     *,
+    scan_kind: str = "git",
     extra_args: list[str] | None = None,
     command_template: str | None = None,
 ) -> list[str]:
     """
-    Default: recursive scan of the repo tree via ``betterleaks dir … <repo>`` (Betterleaks walks directories).
+    Default Betterleaks invocation (unless ``command_template`` is set):
+
+    - ``git`` (default) — scan **git history** (all commits). Finds leaks in past revisions; noisier and slower.
+    - ``dir`` — scan the **current working tree** only. Set via ``agents.secrets_reviewer.tools.betterleaks.scan_kind: dir``.
+
     Override with ``command_template`` (placeholders: ``{binary}``, ``{repo}``, ``{report}``, ``{config}``).
     """
     cfg = str(config_path) if config_path and config_path.is_file() else ""
@@ -32,7 +37,10 @@ def build_betterleaks_command(
             config=cfg,
         )
         return shlex.split(s)
-    cmd = [binary, "dir", "--no-banner"]
+    sub = (scan_kind or "git").strip().lower()
+    if sub not in ("dir", "git"):
+        sub = "dir"
+    cmd = [binary, sub, "--no-banner"]
     if extra_args:
         cmd += list(extra_args)
     if cfg:
@@ -47,6 +55,7 @@ def run_betterleaks_scan(
     config_path: Path | None,
     report_path: Path,
     *,
+    scan_kind: str = "git",
     extra_args: list[str] | None = None,
     command_template: str | None = None,
     commands_log: list[str] | None = None,
@@ -56,6 +65,7 @@ def run_betterleaks_scan(
         binary,
         config_path,
         report_path,
+        scan_kind=scan_kind,
         extra_args=extra_args,
         command_template=command_template,
     )

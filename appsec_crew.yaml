@@ -9,13 +9,16 @@
 # CrewAI: every enabled agent needs `llm.api_key` or `llm.api_key_env`.
 #
 # PR vs batch (GitHub Actions sets GITHUB_EVENT_NAME automatically):
+#   - Betterleaks: default `git` (full history). Use `scan_kind: dir` for working-tree only. workflow_dispatch
+#     and pull_request also use `git` (same as default).
 #   - pull_request / pull_request_target + a resolved PR number → comments / PR review on that PR only
 #     (no Issues from Betterleaks or OSV; Semgrep as inline review, not an autofix branch).
 #     If any actionable findings remain, the process exits with code 5 (fail the PR check); the PR comment
 #     suggests tool-native allowlist files. Jira, webhook, and Splunk are not used in PR mode.
 #   - schedule, workflow_dispatch, push, … → Issues for secrets & OSV; Semgrep tries an autofix PR or opens
 #     a tracking Issue if autofix produces no commit. Exit 0 even with findings; Jira / webhook / Splunk run
-#     when enabled in agents.reporter.tools.
+#     when enabled in agents.reporter.tools. New Issues are skipped when an **open** issue with the **same
+#     title** already exists (link to the existing one instead).
 #   - Local testing of “PR mode”: set GITHUB_EVENT_NAME=pull_request and APPSEC_CREW_PR_NUMBER=<n> (and
 #     GITHUB_TOKEN / GITHUB_REPOSITORY as usual).
 #
@@ -27,7 +30,7 @@
 #   - Semgrep: `.semgrep.yml` — see examples/semgrep-local-rules.example.yml
 #     (upstream: https://semgrep.dev/docs/writing-rules/rule-syntax/ )
 #
-# Scanner scope: by default the workspace is scanned recursively (Betterleaks `dir` on the repo tree,
+# Scanner scope: by default the workspace is scanned recursively (Betterleaks per event rules above,
 # OSV `scan -r`, Semgrep `scan` on the repo root). Stderr logs each invocation as JSON with full argv.
 #
 # Tool block (per agent): optional `version` pins the binary/Semgrep release for the reusable GitHub Actions
@@ -63,6 +66,7 @@ agents:
         binary: betterleaks
         version: v1.1.1
         config_path: null
+        # scan_kind: git   # default (`betterleaks git`). Use `dir` for working-tree only.
 
   dependencies_reviewer:
     enabled: true

@@ -43,6 +43,43 @@ class GitHubApi:
         r.raise_for_status()
         return r.json()
 
+    def find_open_issue_with_exact_title(
+        self, title: str, *, max_pages: int = 10
+    ) -> dict[str, Any] | None:
+        """Return the newest matching **open** issue (not a PR) with this exact title, or ``None``."""
+        for page in range(1, max_pages + 1):
+            r = httpx.get(
+                self._url(f"/repos/{self.owner}/{self.repo}/issues"),
+                headers=self._headers,
+                params={"state": "open", "per_page": 100, "page": page},
+                timeout=60.0,
+            )
+            r.raise_for_status()
+            batch = r.json()
+            if not isinstance(batch, list) or not batch:
+                return None
+            for item in batch:
+                if item.get("pull_request"):
+                    continue
+                if item.get("title") == title:
+                    return item
+            if len(batch) < 100:
+                break
+        return None
+
+    def create_issue_deduped(
+        self, title: str, body: str, labels: list[str] | None = None
+    ) -> tuple[dict[str, Any], bool]:
+        """
+        Create an issue unless an open issue with the same **exact title** already exists.
+
+        Returns ``(issue_json, created_new)``.
+        """
+        existing = self.find_open_issue_with_exact_title(title)
+        if existing is not None:
+            return existing, False
+        return self.create_issue(title, body, labels), True
+
     def create_pull_request(
         self,
         title: str,

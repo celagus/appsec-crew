@@ -176,6 +176,8 @@ class SecretsReviewerSettings:
     betterleaks_config_path: str | None = None
     betterleaks_extra_args: list[str] = field(default_factory=list)
     betterleaks_command: str | None = None
+    #: ``dir`` = working tree (CI default); ``git`` = full git history (noisier).
+    betterleaks_scan_kind: str = "git"
     llm_triage_findings: bool = True
 
 
@@ -301,6 +303,9 @@ def _load_secrets_reviewer(block: dict[str, Any], pin: ToolVersions) -> SecretsR
     bl = tools.get("betterleaks") or {}
     cmd = bl.get("command")
     cmd_s = str(cmd).strip() if cmd is not None and str(cmd).strip() else None
+    sk = str(bl.get("scan_kind", "git")).strip().lower()
+    if sk not in ("dir", "git"):
+        sk = "dir"
     return SecretsReviewerSettings(
         enabled=bool(block.get("enabled", True)),
         llm=_parse_llm(block.get("llm")),
@@ -309,6 +314,7 @@ def _load_secrets_reviewer(block: dict[str, Any], pin: ToolVersions) -> SecretsR
         betterleaks_config_path=bl.get("config_path"),
         betterleaks_extra_args=_str_list(bl.get("extra_args")),
         betterleaks_command=cmd_s,
+        betterleaks_scan_kind=sk,
         llm_triage_findings=bool(bl.get("llm_triage", False)),
     )
 

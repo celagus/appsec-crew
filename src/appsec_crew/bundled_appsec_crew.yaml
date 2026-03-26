@@ -28,6 +28,7 @@ agents:
         binary: betterleaks
         version: v1.1.1
         config_path: null
+        # scan_kind: git          # default; use `dir` for working-tree-only (faster)
         # extra_args: []          # appended to default CLI
         # command: null          # or full template: "{binary} dir --no-banner -f json -r {report} {repo}"
         # llm_triage: true       # opt-in LLM false-positive pass (default off)

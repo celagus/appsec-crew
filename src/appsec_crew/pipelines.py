@@ -44,6 +44,18 @@ def _git_remote_host() -> str:
     return u.replace("https://", "").replace("http://", "").rstrip("/")
 
 
+def _effective_betterleaks_scan_kind(ctx: RuntimeContext, configured: str) -> str:
+    """
+    Use ``betterleaks git`` on ``workflow_dispatch`` and ``pull_request`` (full history).
+
+    Otherwise use the configured ``scan_kind`` from YAML (default ``git``; set ``dir`` for working-tree only).
+    """
+    event = (ctx.github_event_name or os.environ.get("GITHUB_EVENT_NAME") or "").strip()
+    if event in ("workflow_dispatch", "pull_request"):
+        return "git"
+    return configured if configured in ("dir", "git") else "git"
+
+
 def _is_pr_scan_mode(ctx: RuntimeContext) -> bool:
     """
     True for ``pull_request`` / ``pull_request_target`` with a resolved PR number.
@@ -528,11 +540,13 @@ def run_secrets_pipeline(ctx: RuntimeContext) -> str:
     report = tmp / "betterleaks.json"
     cfg = Path(sr.betterleaks_config_path) if sr.betterleaks_config_path else None
     commands: list[str] = []
+    scan_kind = _effective_betterleaks_scan_kind(ctx, sr.betterleaks_scan_kind)
     raw_findings = run_betterleaks_scan(
         repo,
         sr.betterleaks_binary,
         cfg,
         report,
+        scan_kind=scan_kind,
         extra_args=sr.betterleaks_extra_args,
         command_template=sr.betterleaks_command,
         commands_log=commands,
@@ -543,6 +557,8 @@ def run_secrets_pipeline(ctx: RuntimeContext) -> str:
     gh = _github_client(s)
     issue_urls: list[str] = []
     pr_mode = _is_pr_scan_mode(ctx)
+    issues_new = 0
+    issues_reused = 0
     if gh and findings and not pr_mode:
         for f in findings:
             rid = f.get("RuleID") or f.get("rule_id") or "unknown-rule"
@@ -556,9 +572,16 @@ def run_secrets_pipeline(ctx: RuntimeContext) -> str:
                 "- Secret value is **not** included in this issue.\n"
                 "- Ignore paths / allowlists: configure `.betterleaks.toml` / `.gitleaks.toml` in this repository.\n"
             )
-            iss = gh.create_issue(title, body, labels=["security", "appsec-crew"])
-            issue_urls.append(iss.get("html_url", ""))
+            iss, created = gh.create_issue_deduped(title, body, labels=["security", "appsec-crew"])
+            if created:
+                issues_new += 1
+            else:
+                issues_reused += 1
+            url = iss.get("html_url", "")
+            if url and url not in issue_urls:
+                issue_urls.append(url)
     ctx.state["secrets_reviewer"] = {
+        "betterleaks_scan_kind_used": scan_kind,
         "commands_executed": commands,
         "issue_urls": [u for u in issue_urls if u],
         "pr_scan_mode": pr_mode,
@@ -566,6 +589,8 @@ def run_secrets_pipeline(ctx: RuntimeContext) -> str:
         "findings_after_triage": len(findings),
         "dismissed_findings": dismissed_pub,
         "findings_total": len(findings),
+        "github_issues_created_new": issues_new,
+        "github_issues_reused_existing": issues_reused,
         "executed": True,
     }
     return json.dumps(ctx.state["secrets_reviewer"], indent=2)
@@ -612,6 +637,7 @@ def run_dependencies_pipeline(ctx: RuntimeContext) -> str:
         "commands_executed": commands,
         "pr_url": None,
         "issue_urls": [],
+        "github_issue_reused_existing": False,
         "executed": True,
     }
 
@@ -632,9 +658,10 @@ def run_dependencies_pipeline(ctx: RuntimeContext) -> str:
     label = human_severity_label(min_lvl)
     title = f"[AppSec] OSV-Scanner: {len(rows)} vulnerable package row(s) (min {label})"
     body = _format_osv_rows_for_issue(rows, cvss_min, label)
-    iss = gh.create_issue(title, body, labels=["security", "appsec-crew", "dependencies"])
+    iss, created_new = gh.create_issue_deduped(title, body, labels=["security", "appsec-crew", "dependencies"])
     url = iss.get("html_url", "")
     ctx.state["dependencies_reviewer"]["issue_urls"] = [u for u in [url] if u]
+    ctx.state["dependencies_reviewer"]["github_issue_reused_existing"] = not created_new
     return json.dumps(ctx.state["dependencies_reviewer"], indent=2)
 
 
@@ -685,6 +712,7 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
         "issue_urls": [],
         "semgrep_review_url": None,
         "findings_markdown": "",
+        "github_issue_reused_existing": False,
         "executed": True,
     }
 
@@ -718,7 +746,9 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
         return json.dumps(ctx.state["code_reviewer"], indent=2)
 
     ctx.state["code_reviewer"]["pr_scan_mode"] = False
-    branch = f"appsec-crew/semgrep-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    # Use a flat branch name: a branch named "appsec-crew" blocks "appsec-crew/anything"
+    # (Git stores refs as files; parent ref and directory namespace cannot coexist).
+    branch = f"appsec-crew-semgrep-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     ensure_identity(
         repo,
         os.environ.get("GIT_COMMITTER_NAME", "appsec-crew"),
@@ -749,11 +779,17 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
             f"{reasons}\n\n"
             "Configure ignores in `.semgrep.yml` and severity via `global.min_severity` in `appsec_crew.yaml`.\n"
         )
-        iss = gh.create_issue(title, body, labels=["security", "appsec-crew", "semgrep"])
+        iss, created_new = gh.create_issue_deduped(title, body, labels=["security", "appsec-crew", "semgrep"])
         url = iss.get("html_url", "")
         ctx.state["code_reviewer"]["issue_urls"] = [u for u in [url] if u]
+        ctx.state["code_reviewer"]["github_issue_reused_existing"] = not created_new
         ctx.state["code_reviewer"]["note"] = (
-            "Semgrep did not produce writable autofixes; opened a tracking GitHub Issue."
+            "Semgrep did not produce writable autofixes; "
+            + (
+                "linked existing open GitHub Issue (same title)."
+                if not created_new
+                else "opened a tracking GitHub Issue."
+            )
         )
         return json.dumps(ctx.state["code_reviewer"], indent=2)
 
@@ -794,7 +830,11 @@ def _markdown_report_pr_scan(ctx: RuntimeContext) -> str:
     if s.secrets_reviewer.enabled and sr.get("executed") and not sr.get("skipped"):
         n = int(sr.get("findings_after_triage", sr.get("findings_total", 0)) or 0)
         raw = sr.get("scanner_findings_total", "n/a")
-        lines.append(f"- **Betterleaks:** {n} finding(s) after triage (scanner raw: **{raw}**).")
+        bk = sr.get("betterleaks_scan_kind_used")
+        bl_suffix = f" (scan: `{bk}`)" if bk else ""
+        lines.append(
+            f"- **Betterleaks:** {n} finding(s) after triage (scanner raw: **{raw}**){bl_suffix}."
+        )
     dr = ctx.state.get("dependencies_reviewer") or {}
     if s.dependencies_reviewer.enabled and dr.get("executed") and not dr.get("skipped"):
         lines.append(f"- **OSV-Scanner:** **{dr.get('vulnerable_rows', 0)}** vulnerable row(s) after CVSS filter + triage.")
@@ -840,22 +880,47 @@ def _markdown_report_batch(ctx: RuntimeContext) -> str:
         f"OSV-Scanner `{ctx.settings.tool_versions.osv_scanner}`, "
         f"Semgrep `{ctx.settings.tool_versions.semgrep}`",
         "",
-        "Scans target the **checked-out repository workspace** recursively by default "
-        "(Betterleaks `dir` over the tree, OSV `-r`, Semgrep `scan` on the repo root).",
-        "",
-        "### secrets-reviewer",
-        "",
     ]
     sr = ctx.state.get("secrets_reviewer") or {}
+    bk = sr.get("betterleaks_scan_kind_used")
+    if bk:
+        lines.append(
+            f"- **Betterleaks scan kind (this run)**: `{bk}` — `workflow_dispatch` and `pull_request` "
+            "use **`git`** (full history); other events use YAML `scan_kind` (default `git`; set `dir` for tree-only)."
+        )
+    else:
+        lines.append(
+            "- **Betterleaks**: not run here (secrets reviewer disabled or skipped before scan). "
+            "When it runs, default is `git`; use YAML `scan_kind: dir` for working-tree only."
+        )
+    lines.extend(
+        [
+            "- **OSV / Semgrep**: recursive workspace scan (`-r` / `scan` on repo root).",
+            "",
+            "### secrets-reviewer",
+            "",
+        ]
+    )
     if sr.get("pr_scan_mode"):
         lines.append(
             "- **PR scan mode**: Betterleaks is summarized here only (**no** GitHub Issues opened)."
         )
-    lines.append(
-        f"- Issues opened: {len(sr.get('issue_urls') or [])} "
-        f"(after triage: **{sr.get('findings_after_triage', sr.get('findings_total', 'n/a'))}** actionable; "
-        f"scanner raw: **{sr.get('scanner_findings_total', 'n/a')}**)"
-    )
+    sec_new = int(sr.get("github_issues_created_new") or 0)
+    sec_reuse = int(sr.get("github_issues_reused_existing") or 0)
+    nu = len(sr.get("issue_urls") or [])
+    if sec_new or sec_reuse:
+        lines.append(
+            f"- GitHub Issues linked: **{nu}** unique URL(s) — **{sec_new}** newly created, "
+            f"**{sec_reuse}** skipped (open issue with same title already exists) "
+            f"(after triage: **{sr.get('findings_after_triage', sr.get('findings_total', 'n/a'))}** actionable; "
+            f"scanner raw: **{sr.get('scanner_findings_total', 'n/a')}**)"
+        )
+    else:
+        lines.append(
+            f"- Issues opened: {nu} "
+            f"(after triage: **{sr.get('findings_after_triage', sr.get('findings_total', 'n/a'))}** actionable; "
+            f"scanner raw: **{sr.get('scanner_findings_total', 'n/a')}**)"
+        )
     for u in sr.get("issue_urls") or []:
         lines.append(f"  - {u}")
     cmds = sr.get("commands_executed") or []
@@ -884,6 +949,8 @@ def _markdown_report_batch(ctx: RuntimeContext) -> str:
         lines.append(f"- **GitHub Issues**: {len(diu)}")
         for u in diu:
             lines.append(f"  - {u}")
+        if dr.get("github_issue_reused_existing"):
+            lines.append("  - _Reused an existing **open** issue with the same title (no duplicate created)._")
     if dr.get("pr_url"):
         lines.append(f"- PR: {dr['pr_url']}")
     dcmds = dr.get("commands_executed") or []
@@ -916,6 +983,8 @@ def _markdown_report_batch(ctx: RuntimeContext) -> str:
         lines.append(f"- **GitHub Issues**: {len(ciu)}")
         for u in ciu:
             lines.append(f"  - {u}")
+        if cr.get("github_issue_reused_existing"):
+            lines.append("  - _Reused an existing **open** issue with the same title (no duplicate created)._")
     if cr.get("pr_url"):
         lines.append(f"- **Autofix PR**: {cr['pr_url']}")
     if cr.get("note") and not cr.get("pr_scan_mode"):
