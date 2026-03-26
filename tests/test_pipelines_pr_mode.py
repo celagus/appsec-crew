@@ -278,6 +278,10 @@ def test_code_pr_mode_review_not_autofix_pr(tmp_path: Path, monkeypatch) -> None
     mock_gh.create_issue.assert_not_called()
     mock_gh.create_pull_request_review.assert_called_once()
     assert ctx.state["code_reviewer"]["semgrep_review_url"] == "https://github.com/o/r/pull/8#pullrequestreview-1"
+    body = mock_gh.create_pull_request_review.call_args.kwargs["body"]
+    assert "**Why:**" in body or "unsafe" in body
+    assert "findings_markdown" in ctx.state["code_reviewer"]
+    assert "app.py:4" in ctx.state["code_reviewer"]["findings_markdown"]
 
 
 def test_code_batch_opens_issue_when_no_autofix_commit(tmp_path: Path, monkeypatch) -> None:

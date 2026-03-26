@@ -293,6 +293,8 @@ GitHub sets `GITHUB_EVENT_NAME` (and the action provides `GITHUB_EVENT_PATH`). A
 | **PR** (`pull_request` / `pull_request_target` with PR #) | Summary on the PR (no Issues) | Same | **PR review** + inline comments when possible | **Exit code 5** if any actionable findings remain; comment lists tool-native files for allowlists. **Jira, webhook, and Splunk are not called.** |
 | **Batch** (e.g. `schedule`, `workflow_dispatch`, `push`) | **GitHub Issues** (one per finding) | **One umbrella Issue** (no OSV remediation PR) | **Autofix PR** or **tracking Issue** | **Exit 0** even with findings (job succeeds). Reporter may send **Jira / webhook / Splunk** when enabled. |
 
+`workflow_dispatch` uses the **same full-repository scan** as `schedule` (there is no “diff-only” scan in PR mode vs batch — only **where results are posted** and **exit code** differ). Ensure `actions/checkout` uses `fetch-depth: 0` (or default for your needs) so the working tree matches what you expect.
+
 ---
 
 ## Exit codes

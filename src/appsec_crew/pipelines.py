@@ -130,8 +130,9 @@ def _pr_scan_findings_failure_appendix(ctx: RuntimeContext) -> str:
         )
     if "code" in counts:
         lines.append(
-            f"- **Code (Semgrep)** — {counts['code']} finding(s): edit **`.semgrep.yml`** "
-            "(e.g. `rules`, `paths`, `pattern-not`, nosemgrep comments where appropriate)."
+            f"- **Code (Semgrep)** — {counts['code']} finding(s): open the **Semgrep PR review** on this PR for "
+            "rule, file, line, explanation, and suggested fix (or **Semgrep — detail** in this thread if the review did not post); "
+            "suppress via **`.semgrep.yml`** or `# nosemgrep` where appropriate."
         )
     lines += [
         "",
@@ -168,6 +169,153 @@ def _semgrep_finding_line(finding: dict[str, Any]) -> int | None:
     return None
 
 
+def _semgrep_repo_relative_path(path: str | None) -> str:
+    """Strip GITHUB_WORKSPACE / Actions `.../work/owner/repo/` so PR comments show repo-relative paths."""
+    if not path:
+        return ""
+    p = str(path).replace("\\", "/")
+    ws = os.environ.get("GITHUB_WORKSPACE")
+    if ws:
+        w = str(ws).rstrip("/").replace("\\", "/")
+        if p == w:
+            return ""
+        if p.startswith(w + "/"):
+            return p[len(w) + 1 :]
+    if "/work/" in p:
+        tail = p.split("/work/", 1)[1]
+        parts = tail.split("/")
+        if len(parts) >= 3:
+            return "/".join(parts[2:])
+    return p
+
+
+def _semgrep_finding_severity(finding: dict[str, Any]) -> str:
+    extra = finding.get("extra")
+    if not isinstance(extra, dict):
+        return "UNKNOWN"
+    s = extra.get("severity")
+    if isinstance(s, str) and s.strip():
+        return s.strip().upper()
+    return "UNKNOWN"
+
+
+def _semgrep_finding_fix(extra: dict[str, Any]) -> str | None:
+    fix = extra.get("fix")
+    if isinstance(fix, str) and fix.strip():
+        return fix.strip()
+    return None
+
+
+def _semgrep_finding_references(extra: dict[str, Any]) -> list[str]:
+    meta = extra.get("metadata")
+    if not isinstance(meta, dict):
+        return []
+    out: list[str] = []
+    refs = meta.get("references")
+    if isinstance(refs, list):
+        for r in refs[:6]:
+            if isinstance(r, str) and r.strip():
+                out.append(r.strip())
+            elif isinstance(r, dict):
+                u = r.get("url")
+                if isinstance(u, str) and u.strip():
+                    out.append(u.strip())
+    elif isinstance(refs, str) and refs.strip():
+        out.append(refs.strip())
+    cwe = meta.get("cwe")
+    if isinstance(cwe, list):
+        for c in cwe[:4]:
+            if isinstance(c, str) and c.strip():
+                out.append(c.strip())
+    elif isinstance(cwe, str) and cwe.strip():
+        out.append(cwe.strip())
+    return out[:6]
+
+
+def _semgrep_fix_fence_lang(display_path: str) -> str:
+    pl = display_path.lower()
+    if pl.endswith((".yml", ".yaml")):
+        return "yaml"
+    if pl.endswith(".py"):
+        return "python"
+    if pl.endswith((".js", ".ts", ".tsx", ".jsx")):
+        return "typescript"
+    return ""
+
+
+def _semgrep_inline_comment_body(finding: dict[str, Any]) -> str:
+    chk = finding.get("check_id") or "?"
+    extra = finding.get("extra") if isinstance(finding.get("extra"), dict) else {}
+    msg = (extra.get("message") or "").strip()
+    sev = _semgrep_finding_severity(finding)
+    fix = _semgrep_finding_fix(extra)
+    disp = _semgrep_repo_relative_path(str(finding.get("path") or ""))
+    lines = [
+        f"**Semgrep** · `{chk}` · **{sev}**",
+        "",
+        msg or "_No rule description._",
+    ]
+    if fix:
+        lang = _semgrep_fix_fence_lang(disp)
+        fx = fix if len(fix) <= 2000 else fix[:1997] + "..."
+        fence = lang or "text"
+        lines.extend(["", "**Suggested fix:**", "", f"```{fence}", fx, "```"])
+    else:
+        lines.extend(
+            [
+                "",
+                "**Suggested fix:** Semgrep did not emit one. Narrow rules in `.semgrep.yml`, use `# nosemgrep` on the "
+                "flagged line, or refactor so user-controlled values are not expanded into `run:` / `script:` steps.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _semgrep_findings_curated_section(findings: list[dict[str, Any]], *, max_items: int = 25) -> str:
+    """Human-oriented Semgrep report (same core fields Semgrep shows, without runner absolute paths)."""
+    chunks: list[str] = []
+    for i, f in enumerate(findings[:max_items], start=1):
+        disp = _semgrep_repo_relative_path(str(f.get("path") or ""))
+        line = _semgrep_finding_line(f)
+        loc = f"`{disp}:{line}`" if (disp and line) else (f"`{disp}`" if disp else "`(unknown path)`")
+        chk = f.get("check_id") or "?"
+        extra = f.get("extra") if isinstance(f.get("extra"), dict) else {}
+        msg = (extra.get("message") or "").strip() or "_No description._"
+        sev = _semgrep_finding_severity(f)
+        fix = _semgrep_finding_fix(extra)
+        refs = _semgrep_finding_references(extra)
+        block = [
+            f"### {i}. {loc}",
+            "",
+            f"- **Rule:** `{chk}`",
+            f"- **Severity:** {sev}",
+            f"- **Why:** {msg}",
+        ]
+        if fix:
+            lang = _semgrep_fix_fence_lang(disp)
+            fx = fix if len(fix) <= 4000 else fix[:3997] + "..."
+            fence = lang or "text"
+            block.extend(["- **Suggested fix:**", "", f"```{fence}", fx, "```"])
+        else:
+            block.append(
+                "- **Suggested fix:** _None from Semgrep._ Adjust the workflow or YAML, add `# nosemgrep`, or exclude the "
+                "rule/path in `.semgrep.yml` if you accept the risk."
+            )
+        if refs:
+            ref_bits: list[str] = []
+            for r in refs:
+                if r.startswith("http://") or r.startswith("https://"):
+                    ref_bits.append(f"<{r}>")
+                else:
+                    ref_bits.append(f"`{r}`")
+            block.append("- **References:** " + " · ".join(ref_bits))
+        chunks.append("\n".join(block))
+    more = ""
+    if len(findings) > max_items:
+        more = f"\n\n_Showing **{max_items}** of **{len(findings)}** findings; see the workflow log for the full JSON._\n"
+    return "\n\n".join(chunks) + more
+
+
 def _post_semgrep_pr_review(
     gh: GitHubApi,
     pr_number: int,
@@ -183,53 +331,40 @@ def _post_semgrep_pr_review(
         return None
 
     max_inline = 25
+    curated = _semgrep_findings_curated_section(findings, max_items=25)
     comments: list[dict[str, Any]] = []
     for f in findings[:max_inline]:
-        path = f.get("path")
+        raw_path = f.get("path")
         line = _semgrep_finding_line(f)
-        if not path or line is None:
+        rel = _semgrep_repo_relative_path(str(raw_path) if raw_path else "")
+        if not rel or line is None:
             continue
-        chk = f.get("check_id") or "?"
-        msg = ((f.get("extra") or {}).get("message") or "")[:400]
         comments.append(
             {
-                "path": str(path),
+                "path": rel,
                 "line": line,
-                "body": (f"**Semgrep** `{chk}`\n\n{msg}" if msg else f"**Semgrep** `{chk}`"),
+                "body": _semgrep_inline_comment_body(f),
             }
         )
 
     body = (
         "### AppSec Crew — Semgrep\n\n"
-        f"**Findings** (after severity filter + triage): **{len(findings)}**\n\n"
-        f"Inline comments below: **{len(comments)}** (capped at {max_inline}; lines must be part of this PR diff).\n"
+        f"**{len(findings)}** finding(s) after severity filter and triage. "
+        f"**{len(comments)}** inline comment(s) on lines that are part of this PR diff (max {max_inline}).\n\n"
+        + curated
     )
     try:
-        if comments:
-            review = gh.create_pull_request_review(
-                pr_number, commit_id=str(commit_id), body=body, comments=comments
-            )
-        else:
-            listing = "\n".join(
-                f"- `{f.get('check_id')}` @ `{f.get('path')}`"
-                + (f":{_semgrep_finding_line(f)}" if _semgrep_finding_line(f) else "")
-                for f in findings[:50]
-            )
-            review = gh.create_pull_request_review(
-                pr_number,
-                commit_id=str(commit_id),
-                body=body + "\n### Findings\n\n" + listing,
-                comments=None,
-            )
+        review = gh.create_pull_request_review(
+            pr_number,
+            commit_id=str(commit_id),
+            body=body,
+            comments=comments if comments else None,
+        )
         url = review.get("html_url")
         return str(url) if url else None
     except Exception:
         try:
-            listing = "\n".join(
-                f"- `{f.get('check_id')}` @ `{f.get('path')}`"
-                for f in findings[:50]
-            )
-            gh.create_pr_comment(pr_number, body + "\n### Findings\n\n" + listing)
+            gh.create_pr_comment(pr_number, body)
         except Exception:
             pass
         return None
@@ -512,6 +647,7 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
             "pr_url": None,
             "issue_urls": [],
             "semgrep_review_url": None,
+            "findings_markdown": "",
         }
         return json.dumps(ctx.state["code_reviewer"], indent=2)
     cr = s.code_reviewer
@@ -548,6 +684,7 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
         "pr_url": None,
         "issue_urls": [],
         "semgrep_review_url": None,
+        "findings_markdown": "",
         "executed": True,
     }
 
@@ -561,13 +698,17 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
 
     label = human_severity_label(min_lvl)
     reasons = "\n".join(
-        f"- `{f.get('check_id')}` @ `{f.get('path')}` — {((f.get('extra') or {}).get('message') or '')[:200]}"
+        f"- `{f.get('check_id')}` @ `{_semgrep_repo_relative_path(str(f.get('path') or ''))}` — "
+        f"{((f.get('extra') or {}).get('message') or '')[:200]}"
         for f in findings[:40]
     )
     if len(findings) > 40:
         reasons += f"\n- … and {len(findings) - 40} more."
 
     if _is_pr_scan_mode(ctx) and ctx.pr_number is not None:
+        ctx.state["code_reviewer"]["findings_markdown"] = _semgrep_findings_curated_section(
+            findings, max_items=25
+        )
         review_url = _post_semgrep_pr_review(gh, ctx.pr_number, findings)
         ctx.state["code_reviewer"]["semgrep_review_url"] = review_url
         ctx.state["code_reviewer"]["pr_scan_mode"] = True
@@ -635,15 +776,57 @@ def run_code_pipeline(ctx: RuntimeContext) -> str:
     return json.dumps(ctx.state["code_reviewer"], indent=2)
 
 
-def _markdown_report(ctx: RuntimeContext) -> str:
+def _markdown_report_pr_scan(ctx: RuntimeContext) -> str:
+    """Short PR comment: counts + Semgrep detail; omit long CLI echoes (they stay in the Actions log)."""
     repo = os.environ.get("GITHUB_REPOSITORY") or "unknown/repo"
     min_s = ctx.settings.min_severity().upper()
-    pr_scan = _is_pr_scan_mode(ctx)
-    run_mode = (
-        "**PR** — summary on this PR only (no Issues; Semgrep as PR review when possible)."
-        if pr_scan
-        else "**Batch / scheduled** — Issues for secrets & OSV; Semgrep autofix PR or a tracking Issue."
+    when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    s = ctx.settings
+    lines: list[str] = [
+        "## AppSec Crew summary",
+        "",
+        f"`{repo}` · **PR scan** · min severity **{min_s}** · {when}",
+        "",
+        "### Results",
+        "",
+    ]
+    sr = ctx.state.get("secrets_reviewer") or {}
+    if s.secrets_reviewer.enabled and sr.get("executed") and not sr.get("skipped"):
+        n = int(sr.get("findings_after_triage", sr.get("findings_total", 0)) or 0)
+        raw = sr.get("scanner_findings_total", "n/a")
+        lines.append(f"- **Betterleaks:** {n} finding(s) after triage (scanner raw: **{raw}**).")
+    dr = ctx.state.get("dependencies_reviewer") or {}
+    if s.dependencies_reviewer.enabled and dr.get("executed") and not dr.get("skipped"):
+        lines.append(f"- **OSV-Scanner:** **{dr.get('vulnerable_rows', 0)}** vulnerable row(s) after CVSS filter + triage.")
+    cr = ctx.state.get("code_reviewer") or {}
+    if s.code_reviewer.enabled and cr.get("executed") and not cr.get("skipped"):
+        lines.append(
+            f"- **Semgrep:** **{cr.get('findings', 0)}** finding(s) after filter + triage "
+            f"(post-severity, pre-triage: **{cr.get('scanner_findings_after_severity', 'n/a')}**)."
+        )
+        if cr.get("semgrep_review_url"):
+            lines.append(
+                f"  - [Semgrep PR review]({cr['semgrep_review_url']}) — **rule, file, line, message, and suggested fix** "
+                "(same detail as below, plus inline comments on the diff)."
+            )
+        fm = (cr.get("findings_markdown") or "").strip()
+        if fm and not cr.get("semgrep_review_url"):
+            lines.extend(["", "### Semgrep — detail", "", fm])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "_Tool versions and full scanner commands: see this workflow run’s **log** on GitHub Actions._",
+        ]
     )
+    return "\n".join(lines)
+
+
+def _markdown_report_batch(ctx: RuntimeContext) -> str:
+    repo = os.environ.get("GITHUB_REPOSITORY") or "unknown/repo"
+    min_s = ctx.settings.min_severity().upper()
+    run_mode = "**Batch / scheduled** — Issues for secrets & OSV; Semgrep autofix PR or a tracking Issue."
     lines = [
         "## AppSec Crew summary",
         "",
@@ -748,6 +931,12 @@ def _markdown_report(ctx: RuntimeContext) -> str:
         for d in cdis[:25]:
             lines.append(f"  - {d}")
     return "\n".join(lines)
+
+
+def _markdown_report(ctx: RuntimeContext) -> str:
+    if _is_pr_scan_mode(ctx):
+        return _markdown_report_pr_scan(ctx)
+    return _markdown_report_batch(ctx)
 
 
 def run_reporter_pipeline(ctx: RuntimeContext) -> str:
