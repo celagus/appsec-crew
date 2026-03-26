@@ -1,9 +1,12 @@
-# AppSec Crew — placeholder Betterleaks config (valid TOML).
-# Replace with your own `.betterleaks.toml` / `.gitleaks.toml` in the target repository.
-# See: https://github.com/betterleaks/betterleaks
+# AppSec Crew — placeholder Betterleaks config.
+# Replace or extend in your repository. See: https://github.com/betterleaks/betterleaks
+#
+# Betterleaks rejects an [allowlist] with empty paths/commits/regexes/stopwords — at least one is required.
 
 title = "appsec-crew-placeholder"
 
 [allowlist]
-description = "No paths ignored by default; customize in your repo."
-paths = []
+description = "Only this config file is ignored (may hold example strings). Add paths/regexes in your repo."
+paths = [
+  "\\.betterleaks\\.toml$",
+]
