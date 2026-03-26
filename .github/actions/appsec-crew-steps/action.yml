@@ -16,6 +16,29 @@ inputs:
     required: true
   config_file:
     required: true
+  # Composite actions cannot use `secrets.*` in action.yml — map from the caller workflow, e.g. `openai_api_key: ${{ secrets.OPENAI_API_KEY }}`.
+  github_token:
+    description: GitHub token for appsec-crew (API) and optional private checkout of appsec-crew
+    required: true
+  openai_api_key:
+    description: OPENAI_API_KEY for enabled LLM agents
+    required: false
+    default: ""
+  jira_email:
+    required: false
+    default: ""
+  jira_api_token:
+    required: false
+    default: ""
+  appsec_webhook_url:
+    required: false
+    default: ""
+  splunk_hec_url:
+    required: false
+    default: ""
+  splunk_hec_token:
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -32,6 +55,7 @@ runs:
         repository: ${{ inputs.appsec_crew_repository }}
         ref: ${{ inputs.appsec_crew_ref }}
         path: .appsec-crew-checkout
+        token: ${{ inputs.github_token }}
 
     - name: Git safe.directory (Semgrep / git-aware tools)
       shell: bash
@@ -111,14 +135,14 @@ runs:
     - name: Run AppSec Crew
       shell: bash
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-        JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-        APPSEC_WEBHOOK_URL: ${{ secrets.APPSEC_WEBHOOK_URL }}
-        SPLUNK_HEC_URL: ${{ secrets.SPLUNK_HEC_URL }}
-        SPLUNK_HEC_TOKEN: ${{ secrets.SPLUNK_HEC_TOKEN }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        JIRA_EMAIL: ${{ inputs.jira_email }}
+        JIRA_API_TOKEN: ${{ inputs.jira_api_token }}
+        APPSEC_WEBHOOK_URL: ${{ inputs.appsec_webhook_url }}
+        SPLUNK_HEC_URL: ${{ inputs.splunk_hec_url }}
+        SPLUNK_HEC_TOKEN: ${{ inputs.splunk_hec_token }}
         GIT_COMMITTER_NAME: appsec-crew
         GIT_COMMITTER_EMAIL: appsec-crew@users.noreply.github.com
       run: |
