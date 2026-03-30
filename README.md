@@ -142,11 +142,11 @@ Omit `version` and the runtime loads pins from the packaged [`bundled_appsec_cre
 
 ### Scanner workspace, logging, triage, and CLI overrides
 
-- **Scope**: Betterleaks runs `dir` on the repository root (full tree), OSV uses `scan -r`, Semgrep uses `scan` on the repo path (recursive by default).
+- **Scope**: Betterleaks runs `git` on the repository by default (full history; set `scan_kind: dir` for tree-only), OSV uses `scan -r`, Semgrep uses `scan` on the repo path (recursive by default).
 - **Logging**: Each subprocess prints a line to **stderr**: `[appsec-crew] executing: {"tool":"…","argv":[…],"shell":"…"}` plus the same argv is stored in workflow JSON as `commands_executed`.
 - **False positives**: Optional **LLM triage** (`llm_triage: true` under each tool block) can dismiss likely false positives after scanning. **Default is off** so CI matches raw scanner output unless you opt in.
 - **Semgrep severity**: `global.min_severity` filters by rule severity. **`WARNING` counts like HIGH/ERROR** (rank 4) for the `high` threshold — Semgrep labels many real issues as WARNING. Missing / unknown severities default to HIGH. Explicit `INFO` / `LOW` / `MEDIUM` use the usual map.
-- **Semgrep registry packs**: Each `extra_configs` value is a Registry id (`p/...`). If any pack returns **404** or is invalid, Semgrep reports `errors` in the JSON and may scan **no files** (`paths.scanned` empty) — not a silent success. The bundled defaults use **`p/golang`** for Go rules (`p/go` no longer resolves on the registry).
+- **Semgrep registry packs**: Each `extra_configs` value is a Registry id (`p/...`). If any pack returns **404** or is invalid, Semgrep reports `errors` in the JSON and may scan **no files** (`paths.scanned` empty) — not a silent success. The bundled defaults use **`p/golang`** for Go rules (`p/go` no longer resolves on the registry). **`p/yaml` is not a Registry pack** (404); use **`p/github-actions`** for GitHub workflow YAML.
 - **Overrides**: Append flags with `extra_args` / `scan_extra_args`, or replace the built argv with a formatted `command` / `scan_command` string. Placeholders: `{binary}`, `{repo}`, `{report}`, `{config}`; Semgrep also `{config_args}` (quoted `--config …` tokens) and `{autofix}` (`--autofix ` or empty). Put a **space before `--json`** in custom Semgrep templates, e.g. `… {config_args} --json -o {report} {repo}`. The schema still accepts `fix_extra_args` for OSV for backward compatibility; the current **batch** flow does not run `osv-scanner fix` (dependencies are reported via Issues).
 
 ### CI: “0 Semgrep findings” vs `global.min_severity`
@@ -189,7 +189,7 @@ This repo publishes:
 
 | Workflow                                                                   | Purpose                                                 |
 | -------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `[ci.yml](./.github/workflows/ci.yml)`                                     | `pytest` on push / PR                                   |
+| `[ci.yml](./.github/workflows/ci.yml)`                                     | `pytest` + Betterleaks, OSV (min **medium** CVSS), Semgrep (WARNING+) on **pull_request** only |
 | `[appsec-crew-reusable.yml](./.github/workflows/appsec-crew-reusable.yml)` | **Reusable** — install scanners + run `appsec-crew`     |
 | `[run-reusable.yml](./.github/workflows/run-reusable.yml)`                 | Dogfood: calls the reusable workflow with `package_path: .` |
 

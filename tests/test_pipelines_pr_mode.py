@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import yaml
 
 from appsec_crew.pipelines import (
+    _effective_betterleaks_scan_kind,
     _github_output_urls,
     _is_pr_scan_mode,
     pr_scan_actionable_findings_counts,
@@ -121,9 +122,10 @@ def test_secrets_pr_mode_no_issues(tmp_path: Path, monkeypatch) -> None:
         lambda *_a, **_kw: [{"RuleID": "aws-key", "File": "x.env", "StartLine": 2}],
     )
     run_secrets_pipeline(ctx)
-    mock_gh.create_issue.assert_not_called()
+    mock_gh.create_issue_deduped.assert_not_called()
     assert ctx.state["secrets_reviewer"]["issue_urls"] == []
     assert ctx.state["secrets_reviewer"]["pr_scan_mode"] is True
+    assert ctx.state["secrets_reviewer"]["betterleaks_scan_kind_used"] == "git"
 
 
 def test_secrets_batch_creates_issue(tmp_path: Path, monkeypatch) -> None:
@@ -149,16 +151,17 @@ def test_secrets_batch_creates_issue(tmp_path: Path, monkeypatch) -> None:
     )
     ctx = _ctx(tmp_path, cfg, pr_number=None, event_name="schedule")
     mock_gh = MagicMock()
-    mock_gh.create_issue.return_value = {"html_url": "https://github.com/o/r/issues/99"}
+    mock_gh.create_issue_deduped.return_value = ({"html_url": "https://github.com/o/r/issues/99"}, True)
     monkeypatch.setattr("appsec_crew.pipelines._github_client", lambda _s: mock_gh)
     monkeypatch.setattr(
         "appsec_crew.pipelines.run_betterleaks_scan",
         lambda *_a, **_kw: [{"RuleID": "aws-key", "File": "x.env", "StartLine": 2}],
     )
     run_secrets_pipeline(ctx)
-    mock_gh.create_issue.assert_called_once()
+    mock_gh.create_issue_deduped.assert_called_once()
     assert ctx.state["secrets_reviewer"]["issue_urls"] == ["https://github.com/o/r/issues/99"]
     assert ctx.state["secrets_reviewer"]["pr_scan_mode"] is False
+    assert ctx.state["secrets_reviewer"]["betterleaks_scan_kind_used"] == "git"
 
 
 def test_dependencies_pr_mode_no_issue(tmp_path: Path, monkeypatch) -> None:
@@ -193,7 +196,7 @@ def test_dependencies_pr_mode_no_issue(tmp_path: Path, monkeypatch) -> None:
     }
     monkeypatch.setattr("appsec_crew.pipelines.run_osv_scan", lambda *_a, **_kw: [row])
     run_dependencies_pipeline(ctx)
-    mock_gh.create_issue.assert_not_called()
+    mock_gh.create_issue_deduped.assert_not_called()
     assert ctx.state["dependencies_reviewer"]["issue_urls"] == []
 
 
@@ -220,7 +223,7 @@ def test_dependencies_batch_opens_issue_not_pr(tmp_path: Path, monkeypatch) -> N
     )
     ctx = _ctx(tmp_path, cfg, pr_number=None, event_name="workflow_dispatch")
     mock_gh = MagicMock()
-    mock_gh.create_issue.return_value = {"html_url": "https://github.com/o/r/issues/55"}
+    mock_gh.create_issue_deduped.return_value = ({"html_url": "https://github.com/o/r/issues/55"}, True)
     monkeypatch.setattr("appsec_crew.pipelines._github_client", lambda _s: mock_gh)
     row = {
         "package": {"name": "lodash", "ecosystem": "npm"},
@@ -230,7 +233,7 @@ def test_dependencies_batch_opens_issue_not_pr(tmp_path: Path, monkeypatch) -> N
     }
     monkeypatch.setattr("appsec_crew.pipelines.run_osv_scan", lambda *_a, **_kw: [row])
     run_dependencies_pipeline(ctx)
-    mock_gh.create_issue.assert_called_once()
+    mock_gh.create_issue_deduped.assert_called_once()
     mock_gh.create_pull_request.assert_not_called()
     assert ctx.state["dependencies_reviewer"]["issue_urls"] == ["https://github.com/o/r/issues/55"]
 
@@ -275,7 +278,7 @@ def test_code_pr_mode_review_not_autofix_pr(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr("appsec_crew.pipelines.run_semgrep", fake_semgrep)
     run_code_pipeline(ctx)
     mock_gh.create_pull_request.assert_not_called()
-    mock_gh.create_issue.assert_not_called()
+    mock_gh.create_issue_deduped.assert_not_called()
     mock_gh.create_pull_request_review.assert_called_once()
     assert ctx.state["code_reviewer"]["semgrep_review_url"] == "https://github.com/o/r/pull/8#pullrequestreview-1"
     body = mock_gh.create_pull_request_review.call_args.kwargs["body"]
@@ -307,7 +310,7 @@ def test_code_batch_opens_issue_when_no_autofix_commit(tmp_path: Path, monkeypat
     )
     ctx = _ctx(tmp_path, cfg, pr_number=None, event_name="schedule")
     mock_gh = MagicMock()
-    mock_gh.create_issue.return_value = {"html_url": "https://github.com/o/r/issues/77"}
+    mock_gh.create_issue_deduped.return_value = ({"html_url": "https://github.com/o/r/issues/77"}, True)
     mock_gh.get_default_branch.return_value = "main"
     monkeypatch.setattr("appsec_crew.pipelines._github_client", lambda _s: mock_gh)
 
@@ -323,7 +326,7 @@ def test_code_batch_opens_issue_when_no_autofix_commit(tmp_path: Path, monkeypat
 
     run_code_pipeline(ctx)
     mock_gh.create_pull_request.assert_not_called()
-    mock_gh.create_issue.assert_called_once()
+    mock_gh.create_issue_deduped.assert_called_once()
     assert ctx.state["code_reviewer"]["issue_urls"] == ["https://github.com/o/r/issues/77"]
 
 
@@ -448,3 +451,80 @@ def test_pr_scan_summary_for_ci_without_reporter(tmp_path: Path, monkeypatch) ->
     md = pr_scan_summary_for_ci(ctx)
     assert "Pull request check failed" in md
     assert ".betterleaks.toml" in md
+
+
+def _agents_all_disabled() -> dict:
+    return {
+        "secrets_reviewer": {"enabled": False, "llm": {"api_key": "k"}, "tools": {"betterleaks": {}}},
+        "dependencies_reviewer": {"enabled": False, "llm": {"api_key": "k"}, "tools": {"osv_scanner": {}}},
+        "code_reviewer": {"enabled": False, "llm": {"api_key": "k"}, "tools": {"semgrep": {}}},
+        "reporter": {
+            "enabled": False,
+            "llm": {"api_key": "k"},
+            "tools": {"jira": {"enabled": False}, "webhook": {"enabled": False}, "splunk": {"enabled": False}},
+        },
+    }
+
+
+def test_effective_betterleaks_scan_kind_workflow_dispatch_forces_git(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    cfg = _cfg(tmp_path, _agents_all_disabled())
+    ctx = _ctx(tmp_path, cfg, pr_number=None, event_name="workflow_dispatch")
+    assert _effective_betterleaks_scan_kind(ctx, "dir") == "git"
+
+
+def test_effective_betterleaks_scan_kind_pull_request_forces_git(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    cfg = _cfg(tmp_path, _agents_all_disabled())
+    ctx = _ctx(tmp_path, cfg, pr_number=1, event_name="pull_request")
+    assert _effective_betterleaks_scan_kind(ctx, "dir") == "git"
+
+
+def test_effective_betterleaks_scan_kind_falls_back_to_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    cfg = _cfg(tmp_path, _agents_all_disabled())
+    ctx = _ctx(tmp_path, cfg, pr_number=None, event_name=None)
+    assert _effective_betterleaks_scan_kind(ctx, "dir") == "git"
+
+
+def test_effective_betterleaks_scan_kind_schedule_uses_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    cfg = _cfg(tmp_path, _agents_all_disabled())
+    ctx = _ctx(tmp_path, cfg, pr_number=None, event_name="schedule")
+    assert _effective_betterleaks_scan_kind(ctx, "dir") == "dir"
+    assert _effective_betterleaks_scan_kind(ctx, "git") == "git"
+
+
+def test_secrets_workflow_dispatch_passes_git_to_betterleaks(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    cfg = _cfg(
+        tmp_path,
+        {
+            "secrets_reviewer": {
+                "enabled": True,
+                "llm": {"api_key": "k"},
+                "tools": {"betterleaks": {"llm_triage": False}},
+            },
+            "dependencies_reviewer": {"enabled": False, "llm": {"api_key": "k"}, "tools": {"osv_scanner": {}}},
+            "code_reviewer": {"enabled": False, "llm": {"api_key": "k"}, "tools": {"semgrep": {}}},
+            "reporter": {
+                "enabled": False,
+                "llm": {"api_key": "k"},
+                "tools": {"jira": {"enabled": False}, "webhook": {"enabled": False}, "splunk": {"enabled": False}},
+            },
+        },
+    )
+    ctx = _ctx(tmp_path, cfg, pr_number=None, event_name="workflow_dispatch")
+    captured: dict[str, str] = {}
+
+    def capture(_repo, *_a, **kw):
+        captured["scan_kind"] = str(kw.get("scan_kind") or "")
+        return []
+
+    monkeypatch.setattr("appsec_crew.pipelines.run_betterleaks_scan", capture)
+    monkeypatch.setattr("appsec_crew.pipelines._github_client", lambda _s: None)
+    run_secrets_pipeline(ctx)
+    assert captured["scan_kind"] == "git"
+    assert ctx.state["secrets_reviewer"]["betterleaks_scan_kind_used"] == "git"

@@ -35,6 +35,28 @@ def test_max_cvss_score_invalid_numeric() -> None:
     assert max_cvss_score(vuln) is None
 
 
+def test_max_cvss_score_cvss_v3_vector_string() -> None:
+    """OSV / GitHub often store a CVSS:3.1 vector in ``score`` instead of a float."""
+    vuln = {
+        "severity": [
+            {
+                "type": "CVSS_V3",
+                "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+            }
+        ]
+    }
+    assert max_cvss_score(vuln) == 7.5
+
+
+def test_max_cvss_score_database_specific_github_label() -> None:
+    """GHSA entries use CVSS_V4 vectors; use ``database_specific.severity`` when numeric score is absent."""
+    vuln = {
+        "severity": [{"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:H"}],
+        "database_specific": {"severity": "HIGH"},
+    }
+    assert max_cvss_score(vuln) == 8.0
+
+
 def test_is_high_or_critical() -> None:
     assert is_high_or_critical(None) is False
     assert is_high_or_critical(6.9) is False

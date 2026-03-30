@@ -1,0 +1,15 @@
+# OSV-Scanner config for this repository (see CI: scripts/ci_osv_gate.py).
+# https://google.github.io/osv-scanner/configuration/
+
+# GHSA-w8v5-vhqr-4h9v / CVE-2025-69872 — diskcache pickle deserialization.
+# PyPI latest is still 5.6.3 (last_affected); no patched wheel yet. Transitive via crewai[tools].
+# Remove this entry when diskcache publishes a release after 5.6.3.
+[[IgnoredVulns]]
+id = "GHSA-w8v5-vhqr-4h9v"
+reason = "Awaiting upstream diskcache release >5.6.3; only used transitively. Track https://osv.dev/vulnerability/GHSA-w8v5-vhqr-4h9v"
+
+# GHSA-gc5v-m9x4-r6x2 — requests extract_zipped_paths(); fixed in requests 2.33.0.
+# crewai-tools 1.10.1 pins requests~=2.32.5, which blocks 2.33.x. Advisory: standard Requests usage is not affected.
+[[IgnoredVulns]]
+id = "GHSA-gc5v-m9x4-r6x2"
+reason = "Blocked by crewai-tools==1.10.1 (requests~=2.32.5). Remove when CrewAI allows requests>=2.33.0. https://osv.dev/vulnerability/GHSA-gc5v-m9x4-r6x2"

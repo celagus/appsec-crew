@@ -145,10 +145,12 @@ runs:
         SPLUNK_HEC_TOKEN: ${{ inputs.splunk_hec_token }}
         GIT_COMMITTER_NAME: appsec-crew
         GIT_COMMITTER_EMAIL: appsec-crew@users.noreply.github.com
+        SCAN_PATH: ${{ inputs.scan_path }}
+        CONFIG_FILE: ${{ inputs.config_file }}
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.config_file }}" ]; then
-          appsec-crew --repo "${{ inputs.scan_path }}" --config "${{ inputs.config_file }}"
+        if [ -n "$CONFIG_FILE" ]; then
+          appsec-crew --repo "$SCAN_PATH" --config "$CONFIG_FILE"
         else
-          appsec-crew --repo "${{ inputs.scan_path }}"
+          appsec-crew --repo "$SCAN_PATH"
         fi
