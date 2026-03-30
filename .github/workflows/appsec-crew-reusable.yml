@@ -119,14 +119,16 @@ jobs:
       - name: Install Semgrep + AppSec Crew
         env:
           SEMGREP_VERSION: ${{ steps.tool_versions.outputs.semgrep_version }}
+          INSTALL_FROM_GITHUB: ${{ inputs.install_from_github }}
+          PACKAGE_PATH: ${{ inputs.package_path }}
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install "semgrep==${SEMGREP_VERSION}"
-          if ${{ inputs.install_from_github }}; then
+          if [ "${INSTALL_FROM_GITHUB}" = "true" ]; then
             pip install "./.appsec-crew-checkout"
           else
-            pip install "./${{ inputs.package_path }}"
+            pip install "./${PACKAGE_PATH}"
           fi
 
       - name: Run AppSec Crew
@@ -141,10 +143,12 @@ jobs:
           SPLUNK_HEC_TOKEN: ${{ secrets.SPLUNK_HEC_TOKEN }}
           GIT_COMMITTER_NAME: appsec-crew
           GIT_COMMITTER_EMAIL: appsec-crew@users.noreply.github.com
+          SCAN_PATH: ${{ inputs.scan_path }}
+          CONFIG_FILE: ${{ inputs.config_file }}
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.config_file }}" ]; then
-            appsec-crew --repo "${{ inputs.scan_path }}" --config "${{ inputs.config_file }}"
+          if [ -n "$CONFIG_FILE" ]; then
+            appsec-crew --repo "$SCAN_PATH" --config "$CONFIG_FILE"
           else
-            appsec-crew --repo "${{ inputs.scan_path }}"
+            appsec-crew --repo "$SCAN_PATH"
           fi

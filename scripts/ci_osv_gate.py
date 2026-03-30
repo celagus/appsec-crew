@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,18 @@ from appsec_crew.utils.severity import cvss_floor_for_min_severity, include_osv_
 
 _MAX_ROWS_PRINT = 60
 _MAX_VULNS_PER_ROW = 15
+# osv-scanner path or basename only; disallow shell metacharacters / injection.
+_OSV_BINARY_RE = re.compile(r"^[\w./+~-]+$")
+
+
+def _validated_osv_binary(name: str) -> str:
+    s = name.strip()
+    if not s or len(s) > 512 or not _OSV_BINARY_RE.fullmatch(s):
+        raise SystemExit(
+            "Invalid --binary: use a short path or basename with only letters, digits, "
+            "._-~/+ (no spaces or shell metacharacters)."
+        )
+    return s
 
 
 def _osv_dev_link(vuln_id: str) -> str:
@@ -101,13 +114,16 @@ def main() -> int:
     args = p.parse_args()
 
     repo = args.repo.resolve()
+    if not repo.is_dir():
+        raise SystemExit(f"Not a directory: {repo}")
+    binary = _validated_osv_binary(args.binary)
     report = Path(tempfile.mkdtemp(prefix="osv-ci-")) / "osv.json"
     cfg = repo / "osv-scanner.toml"
-    cmd = [args.binary, "scan"]
+    cmd = [binary, "scan"]
     if cfg.is_file():
         cmd += ["--config", str(cfg)]
     cmd += ["-r", "-f", "json", "--output", str(report), str(repo)]
-    proc = subprocess.run(cmd, cwd=str(repo), text=True, capture_output=True)
+    proc = subprocess.run(cmd, cwd=repo, text=True, capture_output=True)
     if proc.returncode not in (0, 1):
         print(proc.stderr or proc.stdout, file=sys.stderr)
         return proc.returncode
